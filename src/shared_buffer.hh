@@ -46,7 +46,7 @@ struct shared_buffer_ref {
 public:
     shared_buffer_ref(char *data = NULL, size_t len = 0)
         : sb_owner(NULL), sb_data(data), sb_length(len) {
-
+        memset(&this->sb_link, 0, sizeof(this->sb_link));
     };
 
     ~shared_buffer_ref() {
@@ -70,7 +70,13 @@ public:
         return *this;
     };
 
+    bool empty() const { return this->sb_data == NULL; };
+
     const char *get_data() const { return this->sb_data; };
+
+    const char *get_data_at(off_t offset) const {
+        return &this->sb_data[offset];
+    };
 
     size_t length() const { return this->sb_length; };
 

@@ -41,13 +41,14 @@
 #include <vector>
 
 #include "yajlpp.hh"
+#include "yajl/api/yajl_tree.h"
 #include "lnav_log.hh"
 
 class json_ptr_walk {
 public:
     const static yajl_callbacks callbacks;
 
-    json_ptr_walk() : jpw_handle(yajl_free) {
+    json_ptr_walk() : jpw_handle(yajl_free), jpw_max_ptr_len(0) {
         this->jpw_handle = yajl_alloc(&callbacks, NULL, this);
     };
 
@@ -95,7 +96,7 @@ public:
     std::string current_ptr() {
         std::string retval;
 
-        for (int lpc = 0; lpc < this->jpw_array_indexes.size(); lpc++) {
+        for (size_t lpc = 0; lpc < this->jpw_array_indexes.size(); lpc++) {
             retval.append("/");
             if (this->jpw_array_indexes[lpc] == -1) {
                 retval.append(this->jpw_keys[lpc]);
@@ -108,16 +109,30 @@ public:
             }
         }
 
+        this->jpw_max_ptr_len = std::max(this->jpw_max_ptr_len, retval.size());
+
         return retval;
     };
 
-    typedef std::vector<std::pair<std::string, std::string> > pair_list_t;
+    struct walk_triple {
+        walk_triple(std::string ptr, yajl_type type, std::string value)
+                : wt_ptr(ptr), wt_type(type), wt_value(value) {
+
+        };
+
+        std::string wt_ptr;
+        yajl_type wt_type;
+        std::string wt_value;
+    };
+
+    typedef std::vector<walk_triple> walk_list_t;
 
     auto_mem<yajl_handle_t> jpw_handle;
     std::string jpw_error_msg;
-    pair_list_t jpw_values;
+    walk_list_t jpw_values;
     std::vector<std::string> jpw_keys;
     std::vector<int32_t> jpw_array_indexes;
+    size_t jpw_max_ptr_len;
 };
 
 class json_ptr {
@@ -125,7 +140,6 @@ public:
     enum match_state_t {
         MS_DONE,
         MS_VALUE,
-        MS_ELEMENT,
         MS_ERR_INVALID_TYPE,
         MS_ERR_NO_SLASH,
         MS_ERR_INVALID_ESCAPE,
@@ -135,7 +149,7 @@ public:
     static size_t encode(char *dst, size_t dst_len, const char *src, size_t src_len = -1) {
         size_t retval = 0;
 
-        if (src_len == -1) {
+        if (src_len == (size_t)-1) {
             src_len = strlen(src);
         }
 
@@ -188,16 +202,13 @@ public:
             retval = true;
         }
         else if (this->jp_state == MS_VALUE) {
-           if (this->jp_pos[0] == '/') {
-               this->jp_pos += 1;
-               this->jp_depth += 1;
-               this->jp_state = MS_ELEMENT;
-               retval = true;
-           }
-           else {
-               this->jp_state = MS_ERR_NO_SLASH;
-               retval = false;
-           }
+            if (this->jp_pos[0] == '/') {
+                this->jp_pos += 1;
+                this->jp_depth += 1;
+                this->jp_state = MS_VALUE;
+                this->jp_array_index = -1;
+            }
+            retval = true;
         }
         else {
             retval = true;
@@ -254,7 +265,10 @@ public:
 
     void exit_container(int32_t &depth, int32_t &index) {
         depth -= 1;
-        if (this->jp_state == MS_VALUE && depth == this->jp_depth) {
+        if (this->jp_state == MS_VALUE &&
+            depth == this->jp_depth &&
+            (index == -1 || (index - 1 == this->jp_array_index)) &&
+            this->reached_end()) {
             this->jp_state = MS_DONE;
             index = -1;
         }
@@ -288,7 +302,7 @@ public:
             else {
                 index = 0;
                 this->jp_pos += offset;
-                this->jp_state = MS_ELEMENT;
+                this->jp_state = MS_VALUE;
                 retval = true;
             }
         }

@@ -58,14 +58,14 @@ public:
         : filename_wire(*this, &top_status_source::update_filename)
     {
         this->tss_fields[TSF_TIME].set_width(24);
-        this->tss_fields[TSF_PARTITION_NAME].set_width(30);
+        this->tss_fields[TSF_PARTITION_NAME].set_width(34);
         this->tss_fields[TSF_VIEW_NAME].set_width(6);
         this->tss_fields[TSF_VIEW_NAME].right_justify(true);
         this->tss_fields[TSF_STITCH_VIEW_FORMAT].set_width(2);
         this->tss_fields[TSF_STITCH_VIEW_FORMAT].set_stitch_value(
             view_colors::ansi_color_pair_index(COLOR_CYAN, COLOR_BLUE));
         this->tss_fields[TSF_STITCH_VIEW_FORMAT].right_justify(true);
-        this->tss_fields[TSF_FORMAT].set_width(13);
+        this->tss_fields[TSF_FORMAT].set_width(20);
         this->tss_fields[TSF_FORMAT].right_justify(true);
         this->tss_fields[TSF_STITCH_FORMAT_FILENAME].set_width(2);
         this->tss_fields[TSF_STITCH_FORMAT_FILENAME].set_stitch_value(
@@ -117,7 +117,7 @@ public:
 
                 if (lf->get_format()) {
                     sf_format.set_value("% 13s",
-                                        lf->get_format()->get_name().c_str());
+                                        lf->get_format()->get_name().get());
                 }
                 else if (!lf->get_filename().empty()) {
                     sf_format.set_value("% 13s", "plain text");

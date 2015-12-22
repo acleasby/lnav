@@ -66,7 +66,7 @@ struct line_value {
 class line_buffer {
 public:
     static const size_t DEFAULT_LINE_BUFFER_SIZE   = 256 * 1024;
-    static const size_t MAX_LINE_BUFFER_SIZE       = 4 * DEFAULT_LINE_BUFFER_SIZE;
+    static const size_t MAX_LINE_BUFFER_SIZE       = 4 * 4 * DEFAULT_LINE_BUFFER_SIZE;
     class error
         : public std::exception {
 public:
@@ -93,6 +93,14 @@ public:
      * @return The size of the file or the amount of data pulled from a pipe.
      */
     ssize_t get_file_size() const { return this->lb_file_size; };
+
+    bool is_pipe() const {
+        return !this->lb_seekable;
+    };
+
+    bool is_pipe_closed() const {
+        return !this->lb_seekable && (this->lb_file_size != -1);
+    };
 
     bool is_compressed() const {
         return this->lb_gz_file != NULL || this->lb_bz_file;

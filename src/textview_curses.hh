@@ -185,6 +185,10 @@ public:
         return this->fs_filters.empty();
     };
 
+    bool full() const {
+        return this->fs_filters.size() == logfile_filter_state::MAX_FILTERS;
+    }
+
     size_t next_index() {
         bool used[32];
 
@@ -196,7 +200,7 @@ public:
 
             used[index] = true;
         }
-        for (size_t lpc = 0; lpc < logfile_filter_state::MAX_FILTERS; lpc++) {
+        for (int lpc = 0; lpc < logfile_filter_state::MAX_FILTERS; lpc++) {
             if (!used[lpc]) {
                 return lpc;
             }
@@ -209,7 +213,12 @@ public:
     };
 
     void clear_filters(void) {
-        this->fs_filters.clear();
+        while (!this->fs_filters.empty()) {
+            text_filter *tf = this->fs_filters.back();
+
+            this->fs_filters.pop_back();
+            delete tf;
+        }
     };
 
     void set_filter_enabled(text_filter *filter, bool enabled) {
@@ -234,6 +243,22 @@ public:
         }
 
         return retval;
+    };
+
+    bool delete_filter(std::string id) {
+        std::vector<text_filter *>::iterator iter;
+
+        for (iter = this->fs_filters.begin();
+             iter != this->fs_filters.end() && (*iter)->get_id() != id;
+             iter++) {
+
+        }
+        if (iter != this->fs_filters.end()) {
+            this->fs_filters.erase(iter);
+            return true;
+        }
+
+        return false;
     };
 
     void get_enabled_mask(uint32_t &filter_in_mask, uint32_t &filter_out_mask) {
@@ -275,6 +300,10 @@ public:
      * @return The total number of lines available from the source.
      */
     virtual size_t text_line_count() = 0;
+
+    virtual size_t text_line_width() {
+        return INT_MAX;
+    };
 
     /**
      * Get the value for a line.
@@ -382,11 +411,13 @@ public:
     static bookmark_type_t BM_PARTITION;
     static bookmark_type_t BM_SEARCH;
 
+    static string_attr_type SA_ORIGINAL_LINE;
     static string_attr_type SA_BODY;
 
     struct highlighter {
         highlighter()
             : h_code(NULL),
+              h_code_extra(NULL),
               h_multiple(false) { };
         highlighter(pcre *code,
                     bool multiple = false,
@@ -608,6 +639,11 @@ public:
                this->tc_sub_source->text_line_count();
     };
 
+    size_t listview_width(const listview_curses &lv) {
+        return this->tc_sub_source == NULL ? 0 :
+               this->tc_sub_source->text_line_width();
+    };
+
     void listview_value_for_row(const listview_curses &lv,
                                 vis_line_t line,
                                 attr_line_t &value_out);
@@ -680,9 +716,6 @@ protected:
     text_delegate *tc_delegate;
 
     vis_bookmarks tc_bookmarks;
-
-    vis_line_t tc_lview_top;
-    int        tc_lview_left;
 
     bool   tc_searching;
     bool   tc_follow_search;

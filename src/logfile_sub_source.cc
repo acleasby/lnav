@@ -44,9 +44,14 @@ bookmark_type_t logfile_sub_source::BM_FILES("");
 
 logfile_sub_source::logfile_sub_source()
     : lss_flags(0),
-      lss_min_log_level(logline::LEVEL_UNKNOWN)
+      lss_token_file(NULL),
+      lss_token_date_end(0),
+      lss_min_log_level(logline::LEVEL_UNKNOWN),
+      lss_index_delegate(NULL),
+      lss_longest_line(0)
 {
     this->clear_line_size_cache();
+    this->clear_min_max_log_times();
 }
 
 logfile_sub_source::~logfile_sub_source()
@@ -106,8 +111,6 @@ void logfile_sub_source::text_value_for_line(textview_curses &tc,
     line = this->at(vis_line_t(row));
     this->lss_token_file   = this->find(line);
     this->lss_token_line   = this->lss_token_file->begin() + line;
-    this->lss_token_offset = 0;
-    this->lss_scrub_len    = 0;
 
     if (raw) {
         this->lss_token_file->read_line(this->lss_token_line, value_out);
@@ -168,6 +171,11 @@ void logfile_sub_source::text_value_for_line(textview_curses &tc,
                                   string(buffer));
             }
         }
+    }
+
+    if (this->lss_files.size() > 1) {
+        // Insert space for the file markers.
+        value_out.insert(0, 1, ' ');
     }
 
     if (this->lss_flags & F_TIME_OFFSET) {
@@ -241,6 +249,7 @@ void logfile_sub_source::text_attrs_for_line(textview_curses &lv,
     int time_offset_end = 0;
     int attrs           = 0;
 
+    value_out.clear();
     switch (this->lss_token_line->get_level() & ~logline::LEVEL__FLAGS) {
     case logline::LEVEL_FATAL:
     case logline::LEVEL_CRITICAL:
@@ -278,10 +287,68 @@ void logfile_sub_source::text_attrs_for_line(textview_curses &lv,
         format->annotate(sbr, value_out, line_values);
     }
 
+    lr.lr_start = 0;
+    lr.lr_end = this->lss_token_value.length();
+    value_out.push_back(string_attr(lr, &textview_curses::SA_ORIGINAL_LINE));
+
     lr.lr_start = time_offset_end + this->lss_token_date_end;
     lr.lr_end   = -1;
 
     value_out.push_back(string_attr(lr, &view_curses::VC_STYLE, attrs));
+
+    for (vector<logline_value>::iterator lv_iter = line_values.begin();
+         lv_iter != line_values.end();
+         ++lv_iter) {
+        if (!lv_iter->lv_identifier || !lv_iter->lv_origin.is_valid()) {
+            continue;
+        }
+
+        int id_attrs = vc.attrs_for_ident(lv_iter->text_value(),
+                                          lv_iter->text_length());
+
+        value_out.push_back(string_attr(
+                lv_iter->lv_origin, &view_curses::VC_STYLE, id_attrs));
+    }
+
+    if (this->lss_files.size() > 1) {
+        for (string_attrs_t::iterator iter = value_out.begin();
+             iter != value_out.end();
+             ++iter) {
+            struct line_range *existing_lr = &iter->sa_range;
+
+            existing_lr->lr_start += 1;
+            if (existing_lr->lr_end != -1) {
+                existing_lr->lr_end += 1;
+            }
+        }
+
+        lr.lr_start = 0;
+        lr.lr_end = 1;
+        {
+            vis_bookmarks &bm = lv.get_bookmarks();
+            bookmark_vector<vis_line_t> &bv = bm[&BM_FILES];
+            bool is_first_for_file = binary_search(
+                    bv.begin(), bv.end(), vis_line_t(row));
+            bool is_last_for_file = binary_search(
+                    bv.begin(), bv.end(), vis_line_t(row + 1));
+            chtype graph = ACS_VLINE;
+            if (is_first_for_file) {
+                if (is_last_for_file) {
+                    graph = ACS_DIAMOND;
+                }
+                else {
+                    graph = ACS_ULCORNER;
+                }
+            }
+            else if (is_last_for_file) {
+                graph = ACS_LLCORNER;
+            }
+            value_out.push_back(
+                    string_attr(lr, &view_curses::VC_GRAPHIC, graph));
+        }
+        value_out.push_back(string_attr(lr, &view_curses::VC_STYLE, vc.attrs_for_ident(
+                this->lss_token_file->get_filename())));
+    }
 
     if (this->lss_flags & F_TIME_OFFSET) {
         time_offset_end = 13;
@@ -398,6 +465,7 @@ bool logfile_sub_source::rebuild_index(bool force)
 
         this->lss_index.clear();
         this->lss_filtered_index.clear();
+        this->lss_longest_line = 0;
     }
 
     if (retval || force) {
@@ -408,13 +476,16 @@ bool logfile_sub_source::rebuild_index(bool force)
         for (iter = this->lss_files.begin();
              iter != this->lss_files.end();
              iter++) {
-            if ((*iter)->get_file() == NULL)
+            logfile_data *ld = *iter;
+            logfile *lf = ld->get_file();
+            if (lf == NULL)
                 continue;
 
-            merge.add((*iter),
-                    (*iter)->get_file()->begin() + (*iter)->ld_lines_indexed,
-                    (*iter)->get_file()->end());
-            index_size += (*iter)->get_file()->size();
+            merge.add(ld,
+                      lf->begin() + ld->ld_lines_indexed,
+                      lf->end());
+            index_size += lf->size();
+            this->lss_longest_line = std::max(this->lss_longest_line, lf->get_longest_line_length());
         }
 
         this->lss_index.reset();
@@ -436,7 +507,7 @@ bool logfile_sub_source::rebuild_index(bool force)
 
             off_t insert_point = this->lss_index.merge_value(
                     con_line, logline_cmp(*this));
-            if (insert_point < start_size) {
+            if (insert_point < (off_t)start_size) {
                 start_size = 0;
                 this->lss_filtered_index.clear();
             }
@@ -460,19 +531,35 @@ bool logfile_sub_source::rebuild_index(bool force)
         uint32_t filter_in_mask, filter_out_mask;
         this->get_filters().get_enabled_mask(filter_in_mask, filter_out_mask);
 
+        if (start_size == 0 && this->lss_index_delegate != NULL) {
+            this->lss_index_delegate->index_start(*this);
+        }
+
         for (size_t index_index = start_size;
              index_index < this->lss_index.size();
              index_index++) {
             content_line_t cl = (content_line_t) this->lss_index[index_index];
             uint64_t line_number;
             logfile_data *ld = this->find_data(cl, line_number);
+            logfile::iterator line_iter = ld->get_file()->begin() + line_number;
 
             if (!ld->ld_filter_state.excluded(filter_in_mask, filter_out_mask,
                     line_number) &&
-                    (*(ld->get_file()->begin() + line_number)).get_msg_level() >=
-                    this->lss_min_log_level) {
+                    line_iter->get_msg_level() >=
+                    this->lss_min_log_level &&
+                    !(*line_iter < this->lss_min_log_time) &&
+                    *line_iter <= this->lss_max_log_time) {
                 this->lss_filtered_index.push_back(index_index);
+                if (this->lss_index_delegate != NULL) {
+                    logfile *lf = ld->get_file();
+                    this->lss_index_delegate->index_line(
+                            *this, lf, lf->begin() + line_number);
+                }
             }
+        }
+
+        if (this->lss_index_delegate != NULL) {
+            this->lss_index_delegate->index_complete(*this);
         }
     }
 
@@ -580,6 +667,10 @@ void logfile_sub_source::text_filters_changed()
 
     this->get_filters().get_enabled_mask(filtered_in_mask, filtered_out_mask);
 
+    if (this->lss_index_delegate != NULL) {
+        this->lss_index_delegate->index_start(*this);
+    }
+
     this->lss_filtered_index.clear();
     for (size_t index_index = 0; index_index < this->lss_index.size(); index_index++) {
         content_line_t cl = (content_line_t) this->lss_index[index_index];
@@ -591,6 +682,15 @@ void logfile_sub_source::text_filters_changed()
                 (*(ld->get_file()->begin() + line_number)).get_msg_level() >=
                         this->lss_min_log_level) {
             this->lss_filtered_index.push_back(index_index);
+            if (this->lss_index_delegate != NULL) {
+                logfile *lf = ld->get_file();
+                this->lss_index_delegate->index_line(
+                        *this, lf, lf->begin() + line_number);
+            }
         }
+    }
+
+    if (this->lss_index_delegate != NULL) {
+        this->lss_index_delegate->index_complete(*this);
     }
 }

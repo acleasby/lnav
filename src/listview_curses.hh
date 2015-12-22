@@ -56,6 +56,10 @@ public:
     /** @return The number of rows in the list. */
     virtual size_t listview_rows(const listview_curses &lv) = 0;
 
+    virtual size_t listview_width(const listview_curses &lv) {
+        return INT_MAX;
+    };
+
     /**
      * Get the string value for a row in the list.
      *
@@ -119,7 +123,7 @@ public:
  * View that displays a list of lines that can optionally contain highlighting.
  */
 class listview_curses
-    : public view_curses {
+    : public view_curses, private log_state_dumper {
 public:
     typedef view_action<listview_curses> action;
 
@@ -343,7 +347,10 @@ public:
      */
     void set_left(unsigned int left)
     {
-        if (this->lv_left != left) {
+        if (left > this->get_inner_width()) {
+            alerter::singleton().chime();
+        }
+        else if (this->lv_left != left) {
             this->lv_left = left;
             this->lv_scroll.invoke(this);
             this->lv_needs_update = true;
@@ -399,6 +406,11 @@ public:
                           this->lv_source->listview_rows(*this));
     };
 
+    size_t get_inner_width() const {
+        return this->lv_source == NULL ? 0 :
+               this->lv_source->listview_width(*this);
+    };
+
     void set_needs_update() { this->lv_needs_update = true; };
 
     /**
@@ -407,12 +419,12 @@ public:
      * @param height_out The actual height of the view in lines.
      * @param width_out The actual width of the view in columns.
      */
-    void get_dimensions(vis_line_t &height_out, unsigned long &width_out)
+    void get_dimensions(vis_line_t &height_out, unsigned long &width_out) const
     {
         unsigned long height;
 
         if (this->lv_window == NULL) {
-            height_out = vis_line_t(1);
+            height_out = std::max(this->lv_height, vis_line_t(1));
             width_out = 0;
         }
         else {
@@ -443,6 +455,13 @@ public:
     virtual void do_update(void);
 
     bool handle_mouse(mouse_event &me);
+
+    void log_state() {
+        log_debug("listview_curses=%p", this);
+        log_debug("  lv_title=%s", this->lv_title.c_str());
+        log_debug("  lv_y=%u", this->lv_y);
+        log_debug("  lv_top=%d", (int) this->lv_top);
+    };
 
 protected:
     enum lv_mode_t {

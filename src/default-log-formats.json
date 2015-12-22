@@ -3,21 +3,27 @@
         "title" : "Common Access Log",
         "description" : "The default web access log format for servers like Apache.",
         "url" : "http://en.wikipedia.org/wiki/Common_Log_Format",
+        "multiline" : false,
         "regex" : {
             "ts-first-noquotes" : {
-                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?<c_ip>[^ ]+) (?<cs_username>[^ ]+) (?<cs_method>[A-Z]+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?:-1|\\d+) (?<sc_status>\\d+) \\d+"
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?<c_ip>[^ ]+) (?<cs_username>[^ ]+) (?<cs_method>[A-Z]+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?:-1|\\d+) (?<sc_status>\\d+) \\d+\\s*(?<body>.*)"
             },
             "ts-first" : {
-                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?<c_ip>[^ ]+) (?<cs_username>[^ ]+) (?<cs_method>[A-Z]+) \"(?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))?\" (?:-1|\\d+) (?<sc_status>\\d+) \\d+"
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?<c_ip>[^ ]+) (?<cs_username>[^ ]+) (?<cs_method>[A-Z]+) \"(?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))?\" (?:-1|\\d+) (?<sc_status>\\d+) \\d+\\s*(?<body>.*)"
             },
             "std" : {
-                "pattern" : "^(?<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?<cs_username>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\] \"(?:\\-|(?<cs_method>\\w+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?<cs_version>[\\w/\\.]+))\" (?<sc_status>\\d+) (?<sc_bytes>\\d+|-)(?: \"(?<cs_referer>[^\"]+)\" \"(?<cs_user_agent>[^\"]+)\")?(?<body>.*)"
+                "pattern" : "^(?<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?<cs_username>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\] \"(?:\\-|(?<cs_method>\\w+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?<cs_version>[\\w/\\.]+))\" (?<sc_status>\\d+) (?<sc_bytes>\\d+|-)(?: \"(?<cs_referer>[^\"]+)\" \"(?<cs_user_agent>[^\"]+)\")?\\s*(?<body>.*)"
+            },
+            "mod-std" : {
+                "module-format" : true,
+                "pattern" : "^(?<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?<cs_username>\\S+)\\s+\"(?:\\-|(?<cs_method>\\w+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?<cs_version>[\\w/\\.]+))\" (?<sc_status>\\d+) (?<sc_bytes>\\d+|-)(?: \"(?<cs_referer>[^\"]+)\" \"(?<cs_user_agent>[^\"]+)\")?\\s*(?<body>.*)"
             }
         },
         "level-field": "sc_status",
         "level" : {
             "error" : "^[^123].*"
             },
+        "opid-field" : "c_ip",
         "value" : {
             "c_ip" : {
                 "kind" : "string",
@@ -68,17 +74,84 @@
             }
         ]
     },
+    "autodeploy_log" : {
+        "title" : "VMware vSphere Auto Deploy log format",
+        "description" : "The log format for the VMware Auto Deploy service",
+        "url" : "http://kb.vmware.com/kb/2000988",
+        "regex" : {
+            "std" : {
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) \\[(?<pid>\\d+)\\](?<level>\\w+):(?<module>[\\w-]+):(?<body>.*$)"
+            }
+        },
+        "level-field" : "level",
+        "timestamp-field" : "timestamp",
+        "level" : {
+            "error" : "ERROR",
+            "debug" : "DEBUG",
+            "info" : "INFO",
+            "warning" : "WARNING"
+        },
+        "value" : {
+            "pid" : {
+                "kind" : "integer",
+                "identifier" : true,
+                "foreign-key" : true
+            },
+            "module" : {
+                "kind" : "string",
+                "identifier" : true
+            }
+        },
+        "sample" : [
+            {
+                "line" : "2015-04-24T21:09:29.296 [25376]INFO:somemodule:Something very INFOrmative."
+            }
+        ]
+    },
     "block_log" : {
         "title" : "Generic Block",
         "description" : "A generic format for logs, like cron, that have a date at the start of a block.",
         "regex" : {
             "std" : {
-                "pattern" : "^(?<timestamp>\\w{3} \\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\w+ \\d{4})$"
+                "pattern" : "^(?<timestamp>\\w{3} \\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\w+ \\d{4})(?<body>(?:.|\\n)*)$"
             }
         },
         "sample" : [
             {
                 "line" : "Sat Apr 27 03:33:07 PDT 2013"
+            }
+        ]
+    },
+    "candlepin_log" : {
+        "title"	: "Candlepin log format",
+        "description" : "Log format used by Candlepin registration system",
+        "regex" : {
+            "reqorg" : {
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(req=(?<req>[0-9a-f-]+)|=), org=(?<org>\\w*)\\] (?<alert_level>\\w+)  (?<module>[\\w.]+) - (?<body>.*)$"
+            },
+            "other" : {
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}[+-]\\d{4}) (?<body>.*)$"
+            }
+        },
+        "value" : {
+            "req" : { "kind" : "string", "identifier" : true },
+            "org" : { "kind" : "string", "identifier" : true },
+            "alert_level" : { "kind" : "string" },
+            "module" : { "kind" : "string", "identifier" : true },
+            "body" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "2015-04-17 09:41:50,544 [=, org=] INFO  org.candlepin.guice.CustomizableModules - Found custom module module.config.katello"
+            },
+            {
+                "line" : "2015-04-17 09:41:56,320 [req=f91d4a84-020d-4874-9741-3979d0baf58d, org=] INFO  org.candlepin.common.filter.LoggingFilter - Request: verb=GET, uri=/candlepin/status"
+            },
+            {
+                "line" : "2015-04-17 09:42:39+0200 principalType=trusteduser principal=admin target=OWNER entityId=8ab219c64cc653a7014cc6545a6c0001 type=CREATED owner=8ab219c64cc653a7014cc6545a6c0001"
+            },
+            {
+                "line" : "2015-04-17 10:49:21,912 [req=ec7867ea-2501-4036-bb08-e2d830720cb5, org=npr_goep_hm_com] INFO  org.candlepin.common.filter.LoggingFilter - Response: status=200, content-type=\"application/json\", time=235ms"
             }
         ]
     },
@@ -100,6 +173,38 @@
         "sample" : [
             {
                 "line": "[INFO:choose_repo] choose_repo:47 2013-06-20 17:26:10,691: Setting region in redhat-rhui.repo"
+            }
+        ]
+    },
+    "cups_log" : {
+        "title" : "CUPS log format",
+        "description" : "Log format used by the Common Unix Printing System",
+        "regex" : {
+            "system" : {
+                "pattern" : "^(?<level>[IEW]) \\[(?<timestamp>\\d{2}/\\w{3}/\\d{4}:\\d{2}:\\d{2}:\\d{2} [+-]\\d{2,4})\\] (?<section>\\w+): (?<body>.*)$"
+            },
+            "default" : {
+                "pattern" : "^(?<level>[IEW]) \\[(?<timestamp>\\d{2}/\\w{3}/\\d{4}:\\d{2}:\\d{2}:\\d{2} [+-]\\d{2,4})\\] (?<body>.*)$"
+            }
+        },
+        "level" : {
+            "error" : "E",
+            "warning" : "W"
+        },
+        "value" : {
+            "level" : { "kind" : "string", "identifier" : true },
+            "section" : { "kind" : "string", "identifier" : true },
+            "body" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "I [04/Nov/2010:17:37:40 -0400] Allowing up to 100 client connections per host."
+            },
+            {
+                "line" : "I [04/Nov/2010:17:37:40 -0400] LoadPPDs: Wrote \"/etc/cups/ppds.dat\", 14 PPDs..."
+            },
+            {
+                "line" : "E [04/Nov/2010:17:37:40 -0400] StartListening: Unable to find IP address for server name \"localhost.localdomain\" - Host name lookup failure"
             }
         ]
     },
@@ -143,6 +248,112 @@
             }
         ]
     },
+    "elb_log" : {
+        "title" : "Amazon ELB log",
+        "description" : "Log format for Amazon Elastic Load Balancers",
+        "url" : "http://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/access-log-collection.html",
+        "regex" : {
+            "std" : {
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z) (?<elb>[^ ]+) (?<client_ip>[\\w\\.:]+):(?<client_port>\\d+) (?<backend_ip>[\\w\\.:]+):(?<backend_port>\\d+) (?<request_processing_time>\\d+(\\.\\d+)?) (?<backend_processing_time>\\d+(\\.\\d+)?) (?<response_processing_time>\\d+(\\.\\d+)?) (?<elb_status_code>\\d+|-) (?<backend_status_code>\\d+|-) (?<received_bytes>\\d+) (?<sent_bytes>\\d+) \"(?:\\-|(?<cs_method>\\w+|-) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?<cs_version>[\\w/\\.]+|-)\\s*)\" \"(?<user_agent>[^\"]+)\" (?<ssl_cipher>[\\w-]+) (?<ssl_protocol>[\\w\\.-]+)(?<body>.*)"
+            }
+        },
+        "level-field": "elb_status_code",
+        "level" : {
+            "error" : "^[^123].*"
+        },
+        "opid-field" : "client_ip",
+        "value" : {
+            "elb" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "client_ip" : {
+                "kind" : "string",
+                "collate" : "ipaddress",
+                "identifier" : true
+            },
+            "client_port" : {
+                "kind" : "integer",
+                "foreign-key" : true
+            },
+            "backend_ip" : {
+                "kind" : "string",
+                "collate" : "ipaddress",
+                "identifier" : true
+            },
+            "backend_port" : {
+                "kind" : "integer",
+                "foreign-key" : true
+            },
+            "request_processing_time" : {
+                "kind" : "float"
+            },
+            "backend_processing_time" : {
+                "kind" : "float"
+            },
+            "response_processing_time" : {
+                "kind" : "float"
+            },
+            "elb_status_code" : {
+                "kind" : "integer",
+                "foreign-key" : true
+            },
+            "backend_status_code" : {
+                "kind" : "integer",
+                "foreign-key" : true
+            },
+            "received_bytes" : {
+                "kind" : "integer"
+            },
+            "sent_bytes" : {
+                "kind" : "integer"
+            },
+            "cs_method" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "cs_uri_stem" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "cs_uri_query" : {
+                "kind" : "string"
+            },
+            "cs_version" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "user_agent" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "ssl_cipher" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "ssl_protocol" : {
+                "kind" : "string",
+                "identifier" : true
+            }
+        },
+        "sample" : [
+            {
+                "line" : "2015-11-17T05:45:24.077255Z elastic-prod 54.161.222.121:40909 10.231.68.180:443 0.000031 0.009511 0.000029 200 200 0 415 \"GET https://example.com/foo/bar?baz=1234 HTTP/1.1\" \"test agent\" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2"
+            },
+            {
+                "line" : "2015-05-13T23:39:43.945958Z my-loadbalancer 192.168.131.39:2817 10.0.0.1:80 0.000073 0.001048 0.000057 200 200 0 29 \"GET http://www.example.com:80/ HTTP/1.1\" \"curl/7.38.0\" - -"
+            },
+            {
+                "line" : "2015-05-13T23:39:43.945958Z my-loadbalancer 192.168.131.39:2817 10.0.0.1:80 0.000086 0.001048 0.001337 200 200 0 57 \"GET https://www.example.com:443/ HTTP/1.1\" \"curl/7.38.0\" DHE-RSA-AES128-SHA TLSv1.2"
+            },
+            {
+                "line" : "2015-05-13T23:39:43.945958Z my-loadbalancer 192.168.131.39:2817 10.0.0.1:80 0.001069 0.000028 0.000041 - - 82 305 \"- - - \" \"-\" - -"
+            },
+            {
+                "line" : "2015-05-13T23:39:43.945958Z my-loadbalancer 192.168.131.39:2817 10.0.0.1:80 0.001065 0.000015 0.000023 - - 57 502 \"- - - \" \"-\" ECDHE-ECDSA-AES128-GCM-SHA256 TLSv1.2"
+            }
+        ]
+    },
     "engine_log" : {
         "title" : "engine log",
         "description" : "The log format for the engine.log files from RHEV/oVirt",
@@ -151,6 +362,7 @@
                 "pattern" : "^(?<timestamp>.+) (?<level>.+) \\[(?<logger>.+)\\] \\((?<tid>.+)\\) (?<body>(?:-|\\n)*)"
             }
         },
+        "opid-field" : "tid",
         "value" : {
             "tid" : {
                 "kind" : "string",
@@ -203,7 +415,7 @@
         "description" : "Log for the fsck_hfs tool on Mac OS X.",
         "regex" : {
             "std" : {
-                "pattern" : "^(?<device>[^:]+): fsck_hfs run at (?<timestamp>\\w{3} \\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\d{4})"
+                "pattern" : "^(?<device>[^:]+): fsck_hfs (?:run|started) at (?<timestamp>\\w{3} \\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\d{4})(?<body>(?:.|\\n)*)"
             }
         },
         "value" : {
@@ -235,6 +447,7 @@
             "critical" : "C",
             "fatal" : "F"
         },
+        "opid-field" : "thread",
         "value" : {
             "thread" : {
                 "kind" : "integer",
@@ -256,6 +469,86 @@
             }
         ]
     },
+    "java_log" : {
+        "title" : "Java log format",
+        "description" : "Log format used by log4j and output by most java programs",
+        "url" : "",
+        "regex" : {
+            "jvm" : {
+                "pattern" : "^(?<alert_level>\\w+)\\s+\\|\\s+jvm (?<jvm_no>\\d+)\\s+\\|\\s(?<timestamp>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})\\s+\\| (?<timestamp_f>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(?<function>\\w+-\\d+)\\]\\s+(?<debug_level>\\w+)\\s+(?<class>[\\w.]+)\\s+-\\s+(?<body>\\S.*)"
+            },
+            "dump" : {
+                "pattern" : "^(?<alert_level>\\w+)\\s+\\|\\s+jvm (?<jvm_no>\\d+)\\s+\\|\\s(?<timestamp>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})\\s+\\| JVMDUMP\\w+\\s(?<body>\\S.*)$"
+            },
+            "tasko" : {
+                "pattern" : "^(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(?<function>\\w+-\\d+)\\]\\s+(?<alert_level>\\w+)\\s+(?<class>[\\w.]+)\\s+-\\s+(?<body>\\S.*)$"
+            }
+        },
+        "level-field" : "alert_level",
+        "level" : {
+            "error" : "ERROR",
+            "warning" : "WARN",
+            "debug" : "DEBUG",
+            "info" : "INFO"
+        },
+        "value" : {
+            "function" : { "kind" : "string", "identifier" : true },
+            "alert_level" : { "kind" : "string" },
+            "jvm_no" : { "kind" : "integer" },
+            "debug_level" : { "kind" : "string" },
+            "class" : { "kind" : "string" },
+            "body" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "INFO   | jvm 1    | 2015/04/28 18:40:00 | 2015-04-28 18:40:00,077 [DefaultQuartzScheduler_Worker-8] INFO  com.redhat.rhn.taskomatic.TaskoJob - errata-queue-default: bunch errata-queue-bunch STARTED"
+            },
+            {
+                "line" : "INFO   | jvm 1    | 2015/04/28 18:34:18 | 2015-04-28 18:34:18,872 [Thread-46] DEBUG com.redhat.rhn.common.hibernate.ConnectionManager - Adding resource com/redhat/rhn/domain/action/ActionArchType.hbm.xml"
+            },
+            {
+                "line" : "2015-05-22 16:10:00,123 [DefaultQuartzScheduler_Worker-5] INFO  com.redhat.rhn.taskomatic.task.ErrataCacheTask  - In the queue: 24"
+            },
+            {
+                "line" : "INFO   | jvm 1    | 2015/05/24 07:35:50 | JVMDUMP013I Processed dump event \"user\", detail \"\"."
+            }
+        ]
+    },
+    "katello_log" : {
+        "title" : "Katello log format",
+        "description" : "Log format used by katello and foreman as used in Satellite 6.",
+        "url" : "http://theforeman.org/",
+        "regex" : {
+            "log" : {
+                "pattern" : "^\\[\\s?(?<alert_level>\\w+)\\s(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\s(?<module>\\w+)\\]\\s+(?<message>\\S.*)$"
+            }
+        },
+        "level-field" : "alert_level",
+        "level" : {
+            "error" : "ERROR",
+            "warning" : "WARN",
+            "debug" : "DEBUG"
+        },
+        "value" : {
+            "alert_level" : { "kind" : "string" },
+            "module" : { "kind" : "string" },
+            "message" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "[DEBUG 2015-05-20 12:22:19 main]  /Stage[main]/Certs::Candlepin/Exec[create candlepin qpid exchange]/unless: Failed: ConnectError: [Errno 1] _ssl.c:504: error:14094418:SSL routines:SSL3_READ_BYTES:tlsv1 alert unknown ca"
+            },
+            {
+                "line" : "[DEBUG 2015-05-20 12:22:19 main]  Exec[create candlepin qpid exchange](provider=posix): Executing 'qpid-config --ssl-certificate /etc/pki/katello/certs/java-client.crt --ssl-key /etc/pki/katello/private/java-client.key -b 'amqps://avl248.bcc.qld.gov.au:5671' add exchange topic event --durable'"
+            },
+            {
+                "line" : "[ERROR 2015-05-20 12:22:19 main]  qpid-config --ssl-certificate /etc/pki/katello/certs/java-client.crt --ssl-key /etc/pki/katello/private/java-client.key -b 'amqps://avl248.bcc.qld.gov.au:5671' add exchange topic event --durable returned 1 instead of one of [0]"
+            },
+            {
+                "line" : "[ INFO 2015-05-20 12:22:19 main] /usr/share/ruby/vendor_ruby/puppet/util/errors.rb:104:in `fail'"
+            }
+        ]
+    },
     "openam_log": {
         "title" : "OpenAM Log",
         "description" : "The OpenAM identity provider.",
@@ -268,9 +561,10 @@
             "critical" : "SEVERE",
             "trace" : "FINE|FINEST"
         },
+        "multiline" : false,
         "regex" : {
             "std" : {
-                "pattern" : "^\"(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\"\\s+(?<data>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?<loginid>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?<contextid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<ipaddr>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<level>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<domain>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<loggedby>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<messageid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<modulename>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<nameid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<hostname>[^ \"]+|\"(?:[^\"]|\"\")*\")$"
+                "pattern" : "^\"(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\"\\s+(?<data>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?<loginid>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?<contextid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<ipaddr>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<level>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<domain>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<loggedby>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<messageid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<modulename>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<nameid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?<hostname>[^ \"]+|\"(?:[^\"]|\"\")*\")(?<body>.*)$"
             }
         },
         "value" : {
@@ -388,12 +682,13 @@
         "title" : "CUPS Page Log",
         "description" : "The CUPS server log of printed pages.",
         "url" : "http://www.cups.org/documentation.php/doc-1.7/ref-page_log.html",
+        "multiline" : false,
         "regex" : {
             "pre-1.7" : {
-                "pattern" : "^(?<printer>[\\w_\\-\\.]+) (?<username>[\\w\\.\\-]+) (?<job_id>\\d+) \\[(?<timestamp>[^\\]]+)\\] (?<page_number>total|\\d+) (?<num_copies>\\d+) (?<job_billing>[^ ]+) (?<job_originating_hostname>[\\w\\.:\\-]+)$"
+                "pattern" : "^(?<printer>[\\w_\\-\\.]+) (?<username>[\\w\\.\\-]+) (?<job_id>\\d+) \\[(?<timestamp>[^\\]]+)\\] (?<page_number>total|\\d+) (?<num_copies>\\d+) (?<job_billing>[^ ]+) (?<job_originating_hostname>[\\w\\.:\\-]+)(?<body>.*)$"
             },
             "1.7" : {
-                "pattern" : "^(?<printer>[\\w_\\-\\.]+) (?<username>[\\w\\.\\-]+) (?<job_id>\\d+) \\[(?<timestamp>[^\\]]+)\\] (?<page_number>total|\\d+) (?<num_copies>\\d+) (?<job_billing>[^ ]+) (?<job_originating_hostname>[\\w\\.:\\-]+) (?<job_name>.+) (?<media>[^ ]+) (?<sides>.+)$"
+                "pattern" : "^(?<printer>[\\w_\\-\\.]+) (?<username>[\\w\\.\\-]+) (?<job_id>\\d+) \\[(?<timestamp>[^\\]]+)\\] (?<page_number>total|\\d+) (?<num_copies>\\d+) (?<job_billing>[^ ]+) (?<job_originating_hostname>[\\w\\.:\\-]+) (?<job_name>.+) (?<media>[^ ]+) (?<sides>.+)(?<body>.*)$"
             }
         },
         "value" : {
@@ -407,7 +702,8 @@
             },
             "job_id" : {
                 "kind" : "integer",
-                "identifier" : true
+                "identifier" : true,
+                "foreign-key" : true
             },
             "page_number" : {
                 "kind" : "string"
@@ -445,6 +741,44 @@
                 "line" : "tec_IS2027 kurt 401 [22/Apr/2003:10:28:43 +0100] 1 3 #marketing 10.160.50.13"
             }
         ]
+    },
+    "papertrail_log": {
+        "title" : "Papertrail Service",
+        "url" : "https://papertrailapp.com/",
+        "description" : "Log format for the papertrail log management service",
+        "json" : true,
+        "hide-extra" : true,
+        "file-pattern" : "pt:.*",
+        "line-format" : [
+            { "field" : "display_received_at" },
+            " ",
+            { "field" : "hostname" },
+            " ",
+            { "field" : "program" },
+            ": ",
+            { "field" : "message" }
+        ],
+        "level-field" : "severity",
+        "level" : {
+            "error" : "Error",
+            "debug" : "Debug",
+            "warning" : "Warning",
+            "info" : "Info(?:rmational)?|Notice",
+            "critical" : "Crit(?:ical)?",
+            "fatal" : "Emerg(?:ency)?|Alert"
+        },
+        "timestamp-field" : "generated_at",
+        "body-field" : "message",
+        "value" : {
+            "program" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "hostname" : {
+                "kind" : "string",
+                "identifier" : true
+            }
+        }
     },
     "snaplogic_log" : {
         "title" : "SnapLogic Server Log",
@@ -498,10 +832,38 @@
             }
         ]
     },
+    "sssd_log" : {
+        "title" : "SSSD log format",
+        "description" : "Log format used by the System Security Services Daemon",
+        "url" : "http://fedorahosted.org/sssd",
+        "regex" : {
+            "core" : {
+                "pattern" : "^\\((?<timestamp>\\w{3} \\w{3} ( \\d|\\d{2}) \\d{2}:\\d{2}:\\d{2} \\d{4})\\) \\[sssd\\] \\[(?<function>\\w+)\\] \\((?<debug_level>0x[0-9a-fA-F]{4})\\): (?<body>.*)$"
+            },
+            "module" : {
+                "pattern" : "^\\((?<timestamp>\\w{3} \\w{3} ( \\d|\\d{2}) \\d{2}:\\d{2}:\\d{2} \\d{4})\\) \\[sssd(?<module>\\[.*?\\])\\] \\[(?<function>\\w+)\\] \\((?<debug_level>0x[0-9a-fA-F]{4})\\): (?<body>.*)$"
+            }
+        },
+        "value" : {
+            "module" : { "kind" : "string" },
+            "function" : { "kind" : "string" },
+            "debug_level" : { "kind" : "string" },
+            "body" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "(Tue Mar 31 06:03:46 2015) [sssd[be[default]]] [sysdb_search_by_name] (0x0400): No such entry"
+            },
+            {
+                "line" : "(Tue Mar 31 05:58:38 2015) [sssd] [start_service] (0x0100): Queueing service LDAP for startup"
+            }
+        ]
+    },
     "strace_log" : {
         "title" : "Strace",
         "description" : "The strace output format.",
         "url" : "http://en.wikipedia.org/wiki/Strace",
+        "multiline" : false,
         "regex" : {
             "std" : {
                 "pattern" : "^(?<timestamp>\\d{2}:\\d{2}:\\d{2}\\.\\d{6}) (?<syscall>\\w+)\\((?<body>.*)\\)\\s+=\\s+(?<rc>[-\\w]+)(?: (?<errno>\\w+) \\([^\\)]+\\))?(?: <(?<duration>\\d+\\.\\d+)>)?$"
@@ -520,7 +882,8 @@
                 "kind" : "string"
             },
             "rc" : {
-                "kind" : "integer"
+                "kind" : "integer",
+                "foreign-key" : true
             },
             "duration" : {
                 "kind" : "float"
@@ -539,20 +902,67 @@
             }
         ]
     },
+    "sudo_log" : {
+        "title" : "sudo",
+        "description" : "The sudo privilege management tool.",
+        "url" : "",
+        "regex" : {
+            "std" : {
+                "module-format" : true,
+                "pattern" : "^(?<login>\\S+)\\s*: (?:(?<error_msg>[^;]+);)?\\s*TTY=(?<tty>[^;]+)\\s+;\\s*PWD=(?<pwd>[^;]+)\\s+;\\s*USER=(?<user>[^;]+)\\s+;\\s*COMMAND=(?<command>(\\n|.)*)$"
+            }
+        },
+        "level-field" : "error_msg",
+        "level" : {
+            "error" : ".+"
+        },
+        "value" : {
+            "login" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "error_msg" : {
+                "kind" : "string"
+            },
+            "tty" : {
+                "kind" : "string"
+            },
+            "pwd" : {
+                "kind" : "string"
+            },
+            "user" : {
+                "kind" : "string",
+                "identifier" : true
+            },
+            "command" : {
+                "kind" : "string"
+            }
+        },
+        "sample" : [
+            {
+                "line" : "stack : 3 incorrect password attempts ; TTY=ttys005 ; PWD=/Users/stack/ClionProjects/lbuild ; USER=root ; COMMAND=/bin/ls"
+            },
+            {
+                "line" : "stack : TTY=ttys005 ; PWD=/Users/stack/ClionProjects/lbuild ; USER=root ; COMMAND=/bin/ls"
+            }
+        ]
+    },
     "syslog_log" : {
         "title" : "Syslog",
         "description" : "The system logger format found on most posix systems.",
         "url" : "http://en.wikipedia.org/wiki/Syslog",
         "regex" : {
             "std" : {
-                "pattern" : "^(?<timestamp>\\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2})(?: (?<log_hostname>[a-zA-Z0-9:][^ ]+[a-zA-Z0-9]))?(?:(?: (?<log_procname>(?:[^\\[:]+|[^:]+))(?:\\[(?<log_pid>\\d+)])?:(?<body>(?:.|\\n)*))$|:?(?:(?: ---)? last message repeated \\d+ times?(?: ---)?))"
+                "pattern" : "^(?<timestamp>\\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2})(?: (?<log_hostname>[a-zA-Z0-9:][^ ]+[a-zA-Z0-9]))?(?:(?: (?<log_procname>(?:[^\\[:]+|[^:]+))(?:\\[(?<log_pid>\\d+)\\])?:(?<body>(?:.|\\n)*))$|:?(?:(?: ---)? last message repeated \\d+ times?(?: ---)?))"
             }
         },
         "level-field" : "body",
         "level" : {
-            "error" : "(?:failed|failure|error)",
-            "warning" : "(?:warn|not responding|init: cannot execute)"
+            "error" : "(?:(?:(?<![a-zA-Z]))(?:(?i)error(?:s)?)(?:(?![a-zA-Z]))|failed|failure)",
+            "warning" : "(?:(?:(?i)warn)|not responding|init: cannot execute)"
         },
+        "opid-field" : "log_pid",
+        "module-field" : "log_procname",
         "value" : {
             "log_hostname" : {
                 "kind" : "string",
@@ -594,7 +1004,7 @@
         ],
         "regex" : {
             "std" : {
-                "pattern" : "^TCF (?<timestamp>\\d{2}:\\d{2}.\\d{3}): (?:Server-Properties: (?:.*)|channel server|\\w+: (?<dir>--->|<---) (?<type>\\w)(?: (?<token>\\w+))?(?: (?<service>\\w+))?(?: (?<name>\\w+))?(?: (?<msg>.*))?(?: <eom>))$"
+                "pattern" : "^TCF (?<timestamp>\\d{2}:\\d{2}.\\d{3}): (?:Server-Properties: (?:.*)|channel server|\\w+: (?<dir>--->|<---) (?<type>\\w)(?: (?<token>\\w+))?(?: (?<service>\\w+))?(?: (?<name>\\w+))?(?: (?<msg>.*))?(?: <eom>))(?<body>.*)$"
             }
         },
         "value" : {
@@ -651,15 +1061,17 @@
     "uwsgi_log" : {
         "title" : "Uwsgi Log",
         "description" : "The uwsgi log format.",
+        "multiline" : false,
         "regex" : {
             "std" : {
-                "pattern" : "^\\[pid: (?<s_pid>\\d+)\\|app: (?<s_app>[\\-\\d]+)\\|req: (?<s_req>[\\-\\d]+)/(?<s_worker_reqs>\\d+)\\] (?<c_ip>[^ ]+) \\((?<cs_username>[^\\)]*)\\) \\{(?<cs_vars>\\d+) vars in (?<cs_bytes>\\d+) bytes\\} \\[(?<timestamp>[^\\]]+)\\] (?<cs_method>[A-Z]+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? => generated (?<sc_bytes>\\d+) bytes in (?<s_runtime>\\d+) (?<rt_unit>\\w+) \\((?<cs_version>[^ ]+) (?<sc_status>\\d+)\\) (?<sc_headers>\\d+) headers in (?<sc_header_bytes>\\d+) bytes \\((?<s_switches>\\d+) switches on core (?<s_core>\\d+)\\)"
+                "pattern" : "^\\[pid: (?<s_pid>\\d+)\\|app: (?<s_app>[\\-\\d]+)\\|req: (?<s_req>[\\-\\d]+)/(?<s_worker_reqs>\\d+)\\] (?<c_ip>[^ ]+) \\((?<cs_username>[^\\)]*)\\) \\{(?<cs_vars>\\d+) vars in (?<cs_bytes>\\d+) bytes\\} \\[(?<timestamp>[^\\]]+)\\] (?<cs_method>[A-Z]+) (?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? => generated (?<sc_bytes>\\d+) bytes in (?<s_runtime>\\d+) (?<rt_unit>\\w+) \\((?<cs_version>[^ ]+) (?<sc_status>\\d+)\\) (?<sc_headers>\\d+) headers in (?<sc_header_bytes>\\d+) bytes \\((?<s_switches>\\d+) switches on core (?<s_core>\\d+)\\)(?<body>.*)"
             }
         },
         "level-field": "sc_status",
         "level" : {
             "error" : "^[^123]"
             },
+        "opid-field" : "s_pid",
         "value" : {
             "s_pid" : {
                 "kind" : "string",
@@ -792,26 +1204,36 @@
         "url": "",
         "regex": {
             "std": {
-                "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z) cpu(?<cpu>\\d+):(?<world_id>\\d+)\\)((?<level>WARNING): )?(?<body>.*)"
+                "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z) cpu(?<cpu>\\d+):(?<world_id>\\d+)\\)((?:(?<level>WARNING|ALERT)|(?<subsystem>[^:]+)): )?(?<body>.*)"
             }
         },
         "level-field": "level",
         "level": {
+            "error": "ALERT",
             "warning": "WARNING"
         },
         "value": {
             "cpu": {
                 "kind": "integer",
-                "identifier": true
+                "identifier": true,
+                "foreign-key" : true
             },
             "world_id": {
                 "kind": "integer",
+                "identifier": true,
+                "foreign-key" : true
+            },
+            "subsystem": {
+                "kind": "string",
                 "identifier": true
             }
         },
         "sample": [
             {
                 "line": "2014-11-14T19:19:51.559Z cpu7:35233)VC: 2002: Device rescan time 704 msec (total number of devices 91)"
+            },
+            {
+                "line": "2015-04-01T22:22:35.038Z cpu22:44012977)ALERT: This is what an alert looks like."
             }
         ]
     },
@@ -828,14 +1250,18 @@
             },
             "pre-5.0" : {
                 "pattern" : "^\\[(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (?<tid>\\w+) (?<level>\\w+) '(?<comp>[^']+)'(?: opID=(?<opid>[^ \\]]+))?(?: user=(?<user>[\\w\\-]+))?\\](?<body>.*)(?:\\n(?:.|\\n)*)?$"
+            },
+            "ls-log" : {
+                "pattern" : "^\\[(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) (?<tid>[\\w\\-]+)\\s+(?<level>\\w+)\\s+(?<comp>[^\\]]+)\\]\\s+(?<body>(?:.|\\n)*)"
             }
         },
         "level-field": "level",
         "level" : {
-            "error" : "(error|panic)",
-            "warning" : "warning",
+            "error" : "(error|ERROR|panic|PANIC)",
+            "warning" : "(warning|WARNING|warn|WARN)",
             "trace" : "verbose"
             },
+        "opid-field" : "opid",
         "value" : {
             "prc" : {
                 "kind" : "string",
@@ -878,6 +1304,39 @@
             },
             {
                 "line" : "2014-11-04T12:46:42.990+05:30 Section for VMware VirtualCenter, pid=6432, version=6.0.0, build=2255588, option=BETA"
+            },
+            {
+                "line" : "[2013-01-16 02:26:25,500 pool-3-thread-1  INFO  com.vmware.vim.license.service.impl.ServiceImpl] License Accounting Service initialized"
+            }
+        ]
+    },
+    "xmlrpc_log" : {
+        "title" : "RHN server XMLRPC log format",
+        "description" : "Generated by Satellite's XMLRPC component",
+        "url" : "https://access.redhat.com/products/red-hat-satellite",
+        "regex" : {
+            "main" : {
+                "pattern" : "^(?<timestamp>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2} [+-]?\\d{2}:\\d{2}) (?<pid>\\d+) (?<client_ip>\\S+): (?<module>\\w+)/(?<function>.*)(?<arguments>\\(.*?\\))?(?<body>.*)$"
+            }
+        },
+        "value" : {
+            "pid" : { "kind" : "integer", "identifier" : true },
+            "client_ip" : { "kind" : "string", "identifier" : true },
+            "module" : { "kind" : "string" },
+            "function" : { "kind" : "string" }
+        },
+        "sample" : [
+            {
+                "line" : "2015/05/24 07:48:21 -05:00 767 10.206.22.17: xmlrpc/up2date.listChannels(1000011979,)"
+            },
+            {
+                "line" : "2015/05/24 07:48:22 -05:00 1377 10.184.37.105: xmlrpc/registration.welcome_message('lang: None',)"
+            },
+            {
+                "line" : "2015/05/24 07:48:22 -05:00 759 10.49.10.30: xmlrpc/registration.register_osad"
+            },
+            {
+                "line" : "2015/05/24 07:48:22 -05:00 759 10.49.10.30: rhnServer/server_certificate.valid('Server id ID-1000019942 not found in database',)"
             }
         ]
     }

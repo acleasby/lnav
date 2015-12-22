@@ -46,37 +46,74 @@
 #include "log_data_helper.hh"
 #include "lnav_commands.hh"
 #include "session_data.hh"
+#include "command_executor.hh"
+#include "url_loader.hh"
+#include "readline_curses.hh"
+#include "relative_time.hh"
+#include "log_search_table.hh"
+#include "shlex.hh"
 
 using namespace std;
 
-static bool wordexperr(int rc, string &msg)
+static string remaining_args(const string &cmdline,
+                             const vector<string> &args,
+                             size_t index = 1)
 {
-    switch (rc) {
-    case WRDE_BADCHAR:
-        msg = "error: invalid filename character";
-        return false;
+    size_t start_pos = 0;
 
-    case WRDE_CMDSUB:
-        msg = "error: command substitution is not allowed";
-        return false;
+    require(index > 0);
 
-    case WRDE_BADVAL:
-        msg = "error: unknown environment variable in file name";
-        return false;
-
-    case WRDE_NOSPACE:
-        msg = "error: out of memory";
-        return false;
-
-    case WRDE_SYNTAX:
-        msg = "error: invalid syntax";
-        return false;
-
-    default:
-        break;
+    for (int lpc = 0; lpc < index; lpc++) {
+        start_pos += args[lpc].length();
     }
-    
-    return true;
+
+    size_t index_in_cmdline = cmdline.find(args[index], start_pos);
+
+    require(index_in_cmdline != string::npos);
+
+    return cmdline.substr(index_in_cmdline);
+}
+
+static string refresh_pt_search()
+{
+    string retval;
+
+    if (!lnav_data.ld_cmd_init_done) {
+        return "";
+    }
+
+#ifdef HAVE_LIBCURL
+    for (list<logfile *>::iterator iter = lnav_data.ld_files.begin();
+         iter != lnav_data.ld_files.end();
+         ++iter) {
+        logfile *lf = *iter;
+
+        if (startswith(lf->get_filename(), "pt:")) {
+            lf->close();
+        }
+    }
+
+    lnav_data.ld_curl_looper.close_request("papertrailapp.com");
+
+    if (lnav_data.ld_pt_search.empty()) {
+        return "info: no papertrail query is active";
+    }
+    auto_ptr<papertrail_proc> pt(new papertrail_proc(
+            lnav_data.ld_pt_search.substr(3),
+            lnav_data.ld_pt_min_time,
+            lnav_data.ld_pt_max_time));
+    lnav_data.ld_file_names.insert(
+            make_pair(lnav_data.ld_pt_search, pt->copy_fd().release()));
+    lnav_data.ld_curl_looper.add_request(pt.release());
+
+    ensure_view(&lnav_data.ld_views[LNV_LOG]);
+
+    retval = "info: opened papertrail query";
+#else
+    retval = "error: lnav not compiled with libcurl";
+#endif
+
+    return retval;
 }
 
 static string com_adjust_log_time(string cmdline, vector<string> &args)
@@ -108,7 +145,7 @@ static string com_adjust_log_time(string cmdline, vector<string> &args)
         top_time = ll.get_timeval();
 
         dts.set_base_time(top_time.tv_sec);
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         if (dts.scan(args[1].c_str(), args[1].size(), NULL, &tm, new_time) != NULL) {
             timersub(&new_time, &top_time, &time_diff);
             
@@ -141,7 +178,7 @@ static string com_unix_time(string cmdline, vector<string> &args)
 
         log_time.tm_isdst = -1;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         if ((millis = args[1].find('.')) != string::npos ||
             (millis = args[1].find(',')) != string::npos) {
             args[1] = args[1].erase(millis, 4);
@@ -203,27 +240,60 @@ static string com_current_time(string cmdline, vector<string> &args)
 
 static string com_goto(string cmdline, vector<string> &args)
 {
-    string retval = "error: expecting line number/percentage or timestamp";
+    string retval = "error: expecting line number/percentage, timestamp, or relative time";
 
     if (args.size() == 0) {
-        args.push_back("line-time");
+        args.push_back("move-time");
     }
     else if (args.size() > 1) {
+        string all_args = remaining_args(cmdline, args);
         textview_curses *tc = lnav_data.ld_view_stack.top();
         int   line_number, consumed;
         date_time_scanner dts;
+        struct relative_time::parse_error pe;
+        relative_time rt;
         struct timeval tv;
         struct exttm tm;
         float value;
 
-        if (dts.scan(args[1].c_str(), args[1].size(), NULL, &tm, tv) != NULL) {
+        if (rt.parse(all_args, pe)) {
+            if (tc == &lnav_data.ld_views[LNV_LOG]) {
+                content_line_t cl;
+                vis_line_t vl;
+                logline *ll;
+
+                if (!rt.is_absolute()) {
+                    lnav_data.ld_last_relative_time = rt;
+                }
+
+                vl = tc->get_top();
+                cl = lnav_data.ld_log_source.at(vl);
+                ll = lnav_data.ld_log_source.find_line(cl);
+                ll->to_exttm(tm);
+                rt.add(tm);
+                tv.tv_sec = timegm(&tm.et_tm);
+                tv.tv_usec = tm.et_nsec / 1000;
+
+                vl = lnav_data.ld_log_source.find_from_time(tv);
+                tc->set_top(vl);
+                retval = "";
+                if (!rt.is_absolute() && lnav_data.ld_rl_view != NULL) {
+                    lnav_data.ld_rl_view->set_alt_value(
+                            HELP_MSG_2(r, R, "to move forward/backward the same amount of time"));
+                }
+            } else {
+                retval = "error: relative time values only work in the log view";
+            }
+        }
+        else if (dts.scan(args[1].c_str(), args[1].size(), NULL, &tm, tv) != NULL) {
             if (tc == &lnav_data.ld_views[LNV_LOG]) {
                 vis_line_t vl;
 
                 vl = lnav_data.ld_log_source.find_from_time(tv);
                 tc->set_top(vl);
                 retval = "";
-            } else {
+            }
+            else {
                 retval = "error: time values only work in the log view";
             }
         }
@@ -347,10 +417,10 @@ static void yajl_writer(void *context, const char *str, size_t len)
 
 static void json_write_row(yajl_gen handle, int row)
 {
-    db_label_source &dls = lnav_data.ld_db_rows;
+    db_label_source &dls = lnav_data.ld_db_row_source;
     yajlpp_map obj_map(handle);
 
-    for (int col = 0; col < dls.dls_column_types.size(); col++) {
+    for (size_t col = 0; col < dls.dls_column_types.size(); col++) {
         obj_map.gen(dls.dls_headers[col]);
 
         if (dls.dls_rows[row][col] == db_label_source::NULL_STR) {
@@ -387,7 +457,7 @@ static string com_save_to(string cmdline, vector<string> &args)
         return "error: expecting file name or '-' to write to the terminal";
     }
 
-    fn = trim(cmdline.substr(cmdline.find(args[1], args[0].size())));
+    fn = trim(remaining_args(cmdline, args));
 
     static_root_mem<wordexp_t, wordfree> wordmem;
 
@@ -412,7 +482,7 @@ static string com_save_to(string cmdline, vector<string> &args)
     textview_curses *            tc = lnav_data.ld_view_stack.top();
     bookmark_vector<vis_line_t> &bv =
         tc->get_bookmarks()[&textview_curses::BM_USER];
-    db_label_source &dls = lnav_data.ld_db_rows;
+    db_label_source &dls = lnav_data.ld_db_row_source;
 
     if (args[0] == "write-csv-to" || args[0] == "write-json-to") {
         if (dls.dls_headers.empty()) {
@@ -499,7 +569,7 @@ static string com_save_to(string cmdline, vector<string> &args)
             {
                 yajlpp_array root_array(handle);
 
-                for (int row = 0; row < dls.dls_rows.size(); row++) {
+                for (size_t row = 0; row < dls.dls_rows.size(); row++) {
                     json_write_row(handle, row);
                 }
             }
@@ -547,7 +617,7 @@ static string com_pipe_to(string cmdline, vector<string> &args)
             tc->get_bookmarks()[&textview_curses::BM_USER];
     bool pipe_line_to = (args[0] == "pipe-line-to");
 
-    string cmd = trim(cmdline.substr(cmdline.find(args[1], args[0].size())));
+    string cmd = trim(remaining_args(cmdline, args));
     auto_pipe in_pipe(STDIN_FILENO);
     auto_pipe out_pipe(STDOUT_FILENO);
 
@@ -577,8 +647,15 @@ static string com_pipe_to(string cmdline, vector<string> &args)
             if (pipe_line_to && tc == &lnav_data.ld_views[LNV_LOG]) {
                 logfile_sub_source &lss = lnav_data.ld_log_source;
                 log_data_helper ldh(lss);
+                char tmp_str[64];
 
                 ldh.parse_line(tc->get_top(), true);
+
+                snprintf(tmp_str, sizeof(tmp_str), "%d", (int) tc->get_top());
+                setenv("log_line", tmp_str, 1);
+                sql_strftime(tmp_str, sizeof(tmp_str), ldh.ldh_line->get_timeval());
+                setenv("log_time", tmp_str, 1);
+                setenv("log_path", ldh.ldh_file->get_filename().c_str(), 1);
                 for (vector<logline_value>::iterator iter = ldh.ldh_line_values.begin();
                      iter != ldh.ldh_line_values.end();
                      ++iter) {
@@ -640,14 +717,14 @@ static string com_pipe_to(string cmdline, vector<string> &args)
                     shared_buffer_ref sbr;
                     lf->read_full_message(lf->message_start(lf->begin() + cl), sbr);
                     if (write(in_pipe.write_end(), sbr.get_data(), sbr.length()) == -1) {
-                        return "error: Unable to write to pipe -- " + string(strerror(errno));
+                        return "warning: Unable to write to pipe -- " + string(strerror(errno));
                     }
                     write(in_pipe.write_end(), "\n", 1);
                 }
                 else {
                     tc->grep_value_for_line(tc->get_top(), line);
                     if (write(in_pipe.write_end(), line.c_str(), line.size()) == -1) {
-                        return "error: Unable to write to pipe -- " + string(strerror(errno));
+                        return "warning: Unable to write to pipe -- " + string(strerror(errno));
                     }
                     write(in_pipe.write_end(), "\n", 1);
                 }
@@ -656,12 +733,11 @@ static string com_pipe_to(string cmdline, vector<string> &args)
                 for (iter = bv.begin(); iter != bv.end(); iter++) {
                     tc->grep_value_for_line(*iter, line);
                     if (write(in_pipe.write_end(), line.c_str(), line.size()) == -1) {
-                        return "error: Unable to write to pipe -- " + string(strerror(errno));
+                        return "warning: Unable to write to pipe -- " + string(strerror(errno));
                     }
                     write(in_pipe.write_end(), "\n", 1);
                 }
             }
-            in_pipe.close();
 
             retval = "";
             break;
@@ -684,7 +760,7 @@ static string com_highlight(string cmdline, vector<string> &args)
         pcre *      code;
         int         eoff;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         if (hm.find(args[1]) != hm.end()) {
             retval = "error: highlight already exists";
         }
@@ -706,6 +782,7 @@ static string com_highlight(string cmdline, vector<string> &args)
             }
 
             retval = "info: highlight pattern now active";
+            tc->reload_data();
         }
     }
 
@@ -724,7 +801,7 @@ static string com_clear_highlight(string cmdline, vector<string> &args)
         textview_curses::highlight_map_t &hm = tc->get_highlights();
         textview_curses::highlight_map_t::iterator hm_iter;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         hm_iter = hm.find(args[1]);
         if (hm_iter == hm.end()) {
             retval = "error: highlight does not exist";
@@ -732,6 +809,7 @@ static string com_clear_highlight(string cmdline, vector<string> &args)
         else {
             hm.erase(hm_iter);
             retval = "info: highlight pattern cleared";
+            tc->reload_data();
         }
     }
 
@@ -750,7 +828,7 @@ static string com_graph(string cmdline, vector<string> &args)
         pcre *      code;
         int         eoff;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         if ((code = pcre_compile(args[1].c_str(),
                                  PCRE_CASELESS,
                                  &errptr,
@@ -767,10 +845,7 @@ static string com_graph(string cmdline, vector<string> &args)
             hm["(graph"] = hl;
             lnav_data.ld_graph_source.set_highlighter(&hm["(graph"]);
 
-            auto_ptr<grep_proc> gp(new grep_proc(code,
-                                                 tc,
-                                                 lnav_data.ld_max_fd,
-                                                 lnav_data.ld_read_fds));
+            auto_ptr<grep_proc> gp(new grep_proc(code, tc));
 
             gp->queue_request();
             gp->start();
@@ -845,9 +920,13 @@ static string com_filter(string cmdline, vector<string> &args)
         pcre *      code;
         int         eoff;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         if (fs.get_filter(args[1]) != NULL) {
             retval = com_enable_filter(cmdline, args);
+        }
+        else if (fs.full()) {
+            retval = "error: filter limit reached, try combining "
+                    "filters with a pipe symbol (e.g. foo|bar)";
         }
         else if ((code = pcre_compile(args[1].c_str(),
                                       PCRE_CASELESS,
@@ -862,6 +941,7 @@ static string com_filter(string cmdline, vector<string> &args)
                                          text_filter::INCLUDE;
             auto_ptr<pcre_filter> pf(new pcre_filter(lt, args[1], fs.next_index(), code));
 
+            log_debug("%s [%d] %s", args[0].c_str(), pf->get_index(), args[1].c_str());
             fs.add_filter(pf.release());
             tss->text_filters_changed();
             tc->reload_data();
@@ -871,6 +951,32 @@ static string com_filter(string cmdline, vector<string> &args)
             }
 
             retval = "info: filter now active";
+        }
+    }
+
+    return retval;
+}
+
+static string com_delete_filter(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a filter to delete";
+
+    if (args.size() == 0) {
+        args.push_back("filter");
+    }
+    else if (args.size() > 1) {
+        textview_curses *tc = lnav_data.ld_view_stack.top();
+        text_sub_source *tss = tc->get_sub_source();
+        filter_stack &fs = tss->get_filters();
+
+        args[1] = remaining_args(cmdline, args);
+        if (fs.delete_filter(args[1])) {
+            retval = "info: deleted filter";
+            tss->text_filters_changed();
+            tc->reload_data();
+        }
+        else {
+            retval = "error: unknown filter -- " + args[1];
         }
     }
 
@@ -890,7 +996,7 @@ static string com_enable_filter(string cmdline, vector<string> &args)
         filter_stack &fs = tss->get_filters();
         text_filter *lf;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         lf      = fs.get_filter(args[1]);
         if (lf == NULL) {
             retval = "error: no such filter -- " + args[1];
@@ -922,7 +1028,7 @@ static string com_disable_filter(string cmdline, vector<string> &args)
         filter_stack &fs = tss->get_filters();
         text_filter *lf;
 
-        args[1] = cmdline.substr(cmdline.find(args[1], args[0].size()));
+        args[1] = remaining_args(cmdline, args);
         lf      = fs.get_filter(args[1]);
         if (lf == NULL) {
             retval = "error: no such filter -- " + args[1];
@@ -950,9 +1056,8 @@ static string com_enable_word_wrap(string cmdline, vector<string> &args)
     }
     else {
         lnav_data.ld_views[LNV_LOG].set_word_wrap(true);
-        lnav_data.ld_views[LNV_LOG].set_needs_update();
         lnav_data.ld_views[LNV_TEXT].set_word_wrap(true);
-        lnav_data.ld_views[LNV_TEXT].set_needs_update();
+        lnav_data.ld_views[LNV_PRETTY].set_word_wrap(true);
     }
 
     return retval;
@@ -967,15 +1072,14 @@ static string com_disable_word_wrap(string cmdline, vector<string> &args)
     }
     else {
         lnav_data.ld_views[LNV_LOG].set_word_wrap(false);
-        lnav_data.ld_views[LNV_LOG].set_needs_update();
         lnav_data.ld_views[LNV_TEXT].set_word_wrap(false);
-        lnav_data.ld_views[LNV_TEXT].set_needs_update();
+        lnav_data.ld_views[LNV_PRETTY].set_word_wrap(false);
     }
 
     return retval;
 }
 
-static std::vector<string> custom_logline_tables;
+static std::set<string> custom_logline_tables;
 
 static string com_create_logline_table(string cmdline, vector<string> &args)
 {
@@ -991,11 +1095,12 @@ static string com_create_logline_table(string cmdline, vector<string> &args)
         else {
             vis_line_t      vl  = log_view.get_top();
             content_line_t  cl  = lnav_data.ld_log_source.at_base(vl);
-            log_data_table *ldt = new log_data_table(cl, args[1]);
+            log_data_table *ldt = new log_data_table(cl, intern_string::lookup(args[1]));
             string          errmsg;
 
             errmsg = lnav_data.ld_vtab_manager->register_vtab(ldt);
             if (errmsg.empty()) {
+                custom_logline_tables.insert(args[1]);
                 if (lnav_data.ld_rl_view != NULL) {
                     lnav_data.ld_rl_view->add_possibility(LNM_COMMAND,
                       "custom-table",
@@ -1004,6 +1109,7 @@ static string com_create_logline_table(string cmdline, vector<string> &args)
                 retval = "info: created new log table -- " + args[1];
             }
             else {
+                delete ldt;
                 retval = "error: unable to create table -- " + errmsg;
             }
         }
@@ -1020,7 +1126,12 @@ static string com_delete_logline_table(string cmdline, vector<string> &args)
         args.push_back("custom-table");
     }
     else if (args.size() == 2) {
-        string rc = lnav_data.ld_vtab_manager->unregister_vtab(args[1]);
+        if (custom_logline_tables.find(args[1]) == custom_logline_tables.end()) {
+            return "error: unknown logline table -- " + args[1];
+        }
+
+        string rc = lnav_data.ld_vtab_manager->unregister_vtab(
+                intern_string::lookup(args[1]));
 
         if (rc.empty()) {
             if (lnav_data.ld_rl_view != NULL) {
@@ -1029,6 +1140,85 @@ static string com_delete_logline_table(string cmdline, vector<string> &args)
                   args[1]);
             }
             retval = "info: deleted logline table";
+        }
+        else {
+            retval = "error: " + rc;
+        }
+    }
+
+    return retval;
+}
+
+static std::set<string> custom_search_tables;
+
+static string com_create_search_table(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a table name";
+
+    if (args.size() == 0) {
+
+    }
+    else if (args.size() >= 2) {
+        log_search_table *lst;
+        string regex;
+
+        if (args.size() >= 3) {
+            regex = remaining_args(cmdline, args, 2);
+        }
+        else {
+            regex = lnav_data.ld_last_search[LNV_LOG];
+        }
+
+        try {
+            lst = new log_search_table(regex.c_str(),
+                                       intern_string::lookup(args[1]));
+        } catch (pcrepp::error &e) {
+            return "error: unable to compile regex -- " + regex;
+        }
+
+        string          errmsg;
+
+        errmsg = lnav_data.ld_vtab_manager->register_vtab(lst);
+        if (errmsg.empty()) {
+            custom_search_tables.insert(args[1]);
+            if (lnav_data.ld_rl_view != NULL) {
+                lnav_data.ld_rl_view->add_possibility(LNM_COMMAND,
+                                                      "search-table",
+                                                      args[1]);
+            }
+            retval = "info: created new search table -- " + args[1];
+        }
+        else {
+            delete lst;
+            retval = "error: unable to create table -- " + errmsg;
+        }
+    }
+
+    return retval;
+}
+
+static string com_delete_search_table(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a table name";
+
+    if (args.size() == 0) {
+        args.push_back("search-table");
+    }
+    else if (args.size() == 2) {
+        if (custom_search_tables.find(args[1]) == custom_search_tables.end()) {
+            return "error: unknown search table -- " + args[1];
+        }
+
+        string rc = lnav_data.ld_vtab_manager->unregister_vtab(
+                intern_string::lookup(args[1]));
+
+        if (rc.empty()) {
+            if (lnav_data.ld_rl_view != NULL) {
+                lnav_data.ld_rl_view->rem_possibility(LNM_COMMAND,
+                                                      "search-table",
+                                                      args[1]);
+            }
+            retval = "info: deleted search table";
         }
         else {
             retval = "error: " + rc;
@@ -1060,14 +1250,9 @@ static string com_session(string cmdline, vector<string> &args)
         }
         else {
             string            old_file_name, new_file_name;
-            string::size_type space;
             string            saved_cmd;
 
-            space = cmdline.find(' ');
-            while (isspace(cmdline[space])) {
-                space += 1;
-            }
-            saved_cmd = cmdline.substr(space);
+            saved_cmd = trim(remaining_args(cmdline, args));
 
             old_file_name = dotlnav_path("session");
             new_file_name = dotlnav_path("session.tmp");
@@ -1094,10 +1279,11 @@ static string com_session(string cmdline, vector<string> &args)
                 if (!added) {
                     new_session_file << saved_cmd << endl;
 
-                    rename(new_file_name.c_str(), old_file_name.c_str());
+                    log_perror(rename(new_file_name.c_str(),
+                                      old_file_name.c_str()));
                 }
                 else {
-                    remove(new_file_name.c_str());
+                    log_perror(remove(new_file_name.c_str()));
                 }
 
                 retval = "info: session file saved";
@@ -1126,7 +1312,7 @@ static string com_open(string cmdline, vector<string> &args)
     int top = 0;
     string pat;
 
-    pat = trim(cmdline.substr(cmdline.find(args[1], args[0].size())));
+    pat = trim(remaining_args(cmdline, args));
 
     int rc = wordexp(pat.c_str(), wordmem.inout(), WRDE_NOCMD | WRDE_UNDEF);
 
@@ -1134,8 +1320,15 @@ static string com_open(string cmdline, vector<string> &args)
         return retval;
     }
 
-    for (int lpc = 0; lpc < wordmem->we_wordc; lpc++) {
+    for (size_t lpc = 0; lpc < wordmem->we_wordc; lpc++) {
         string fn = wordmem->we_wordv[lpc];
+
+        if (startswith(fn, "pt:")) {
+            lnav_data.ld_pt_search = fn;
+
+            refresh_pt_search();
+            continue;
+        }
 
         if (access(fn.c_str(), R_OK) != 0 &&
             (colon_index = fn.rfind(':')) != string::npos) {
@@ -1165,7 +1358,20 @@ static string com_open(string cmdline, vector<string> &args)
             auto_mem<char> abspath;
             struct stat    st;
 
-            if (is_glob(fn.c_str())) {
+            if (is_url(fn.c_str())) {
+#ifndef HAVE_LIBCURL
+                retval = "error: lnav was not compiled with libcurl";
+#else
+                auto_ptr<url_loader> ul(new url_loader(fn));
+
+                lnav_data.ld_file_names.insert(make_pair(fn, ul->copy_fd().release()));
+                lnav_data.ld_curl_looper.add_request(ul.release());
+                lnav_data.ld_files_to_front.push_back(make_pair(fn, top));
+
+                retval = "info: opened URL";
+#endif
+            }
+            else if (is_glob(fn.c_str())) {
                 lnav_data.ld_file_names.insert(make_pair(fn, -1));
                 retval = "info: watching -- " + fn;
             }
@@ -1251,6 +1457,9 @@ static string com_close(string cmdline, vector<string> &args)
             }
         }
         if (!fn.empty()) {
+            if (is_url(fn.c_str())) {
+                lnav_data.ld_curl_looper.close_request(fn);
+            }
             lnav_data.ld_file_names.erase(make_pair(fn, -1));
             lnav_data.ld_closed_files.insert(fn);
             retval = "info: closed -- " + fn;
@@ -1272,7 +1481,7 @@ static string com_partition_name(string cmdline, vector<string> &args)
         logfile_sub_source &lss = lnav_data.ld_log_source;
         std::map<content_line_t, bookmark_metadata> &bm = lss.get_user_bookmark_metadata();
 
-        args[1] = trim(cmdline.substr(cmdline.find(args[1], args[0].size())));
+        args[1] = trim(remaining_args(cmdline, args));
 
         tc.set_user_mark(&textview_curses::BM_PARTITION, tc.get_top(), true);
 
@@ -1315,6 +1524,71 @@ static string com_clear_partition(string cmdline, vector<string> &args)
 
             bm.erase(lss.at(part_start));
             retval = "info: cleared partition name";
+        }
+    }
+
+    return retval;
+}
+
+static string com_pt_time(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a time value";
+
+    if (args.size() == 0) {
+        args.push_back("move-time");
+        retval = "";
+    }
+    else if (args.size() == 1) {
+        char ftime[64];
+
+        if (args[0] == "pt-min-time") {
+            if (lnav_data.ld_pt_min_time == 0) {
+                retval = "info: minimum time is not set, pass a time value to this command to set it";
+            }
+            else {
+                ctime_r(&lnav_data.ld_pt_min_time, ftime);
+                retval = "info: papertrail minimum time is " + string(ftime);
+            }
+        }
+        if (args[0] == "pt-max-time") {
+            if (lnav_data.ld_pt_max_time == 0) {
+                retval = "info: maximum time is not set, pass a time value to this command to set it";
+            }
+            else {
+                ctime_r(&lnav_data.ld_pt_max_time, ftime);
+                retval = "info: papertrail maximum time is " + string(ftime);
+            }
+        }
+    }
+    else if (args.size() >= 2) {
+        string all_args = remaining_args(cmdline, args);
+        struct timeval new_time = { 0, 0 };
+        relative_time rt;
+        struct relative_time::parse_error pe;
+        date_time_scanner dts;
+        struct exttm tm;
+        time_t now;
+
+        time(&now);
+        dts.dts_keep_base_tz = true;
+        dts.set_base_time(now);
+        if (rt.parse(all_args, pe)) {
+            tm.et_tm = *gmtime(&now);
+            rt.add(tm);
+            new_time.tv_sec = timegm(&tm.et_tm);
+        }
+        else {
+            dts.scan(args[1].c_str(), args[1].size(), NULL, &tm, new_time);
+        }
+        if (new_time.tv_sec != 0) {
+            if (args[0] == "pt-min-time") {
+                lnav_data.ld_pt_min_time = new_time.tv_sec;
+                retval = refresh_pt_search();
+            }
+            if (args[0] == "pt-max-time") {
+                lnav_data.ld_pt_max_time = new_time.tv_sec;
+                retval = refresh_pt_search();
+            }
         }
     }
 
@@ -1462,10 +1736,8 @@ static string com_summarize(string cmdline, vector<string> &args)
             query += query_frag;
         }
 
-        db_label_source &      dls = lnav_data.ld_db_rows;
-        hist_source &          hs  = lnav_data.ld_db_source;
+        db_label_source &dls = lnav_data.ld_db_row_source;
 
-        hs.clear();
         dls.clear();
         retcode = sqlite3_prepare_v2(lnav_data.ld_db.in(),
                                      query.c_str(),
@@ -1593,6 +1865,32 @@ static string com_switch_to_view(string cmdline, vector<string> &args)
     return retval;
 }
 
+static string com_zoom_to(string cmdline, vector<string> &args)
+{
+    string retval = "";
+
+    if (args.size() == 0) {
+        args.push_back("zoomlevel");
+    }
+    else if (args.size() > 1) {
+        bool found = false;
+
+        for (int lpc = 0; lnav_zoom_strings[lpc] && !found; lpc++) {
+            if (strcasecmp(args[1].c_str(), lnav_zoom_strings[lpc]) == 0) {
+                lnav_data.ld_hist_zoom = lpc;
+                rebuild_hist(0, true);
+                found = true;
+            }
+        }
+
+        if (!found) {
+            retval = "error: invalid zoom level -- " + args[1];
+        }
+    }
+
+    return retval;
+}
+
 static string com_load_session(string cmdline, vector<string> &args)
 {
     if (args.empty()) {
@@ -1642,6 +1940,126 @@ static string com_set_min_log_level(string cmdline, vector<string> &args)
     return retval;
 }
 
+static string com_hide_line(string cmdline, vector<string> &args)
+{
+    string retval;
+
+    if (args.empty()) {
+        args.push_back("move-time");
+    }
+    else if (args.size() == 1) {
+        textview_curses *tc = lnav_data.ld_view_stack.top();
+        logfile_sub_source &lss = lnav_data.ld_log_source;
+
+        if (tc == &lnav_data.ld_views[LNV_LOG]) {
+            struct timeval min_time, max_time;
+            bool have_min_time = lss.get_min_log_time(min_time);
+            bool have_max_time = lss.get_max_log_time(max_time);
+            char min_time_str[32], max_time_str[32];
+
+            sql_strftime(min_time_str, sizeof(min_time_str), min_time);
+            sql_strftime(max_time_str, sizeof(max_time_str), max_time);
+            if (have_min_time && have_max_time) {
+                retval = "info: hiding lines before " +
+                        string(min_time_str) +
+                        " and after " +
+                        string(max_time_str);
+            }
+            else if (have_min_time) {
+                retval = "info: hiding lines before " + string(min_time_str);
+            }
+            else if (have_max_time) {
+                retval = "info: hiding lines after " + string(max_time_str);
+            }
+            else {
+                retval = "info: no lines hidden by time, pass an absolute or relative time";
+            }
+        }
+        else {
+            retval = "error: hiding lines by time only works in the log view";
+        }
+    }
+    else if (args.size() >= 2) {
+        string all_args = remaining_args(cmdline, args);
+        textview_curses *tc = lnav_data.ld_view_stack.top();
+        logfile_sub_source &lss = lnav_data.ld_log_source;
+        date_time_scanner dts;
+        struct timeval tv;
+        relative_time rt;
+        struct relative_time::parse_error pe;
+        bool tv_set = false;
+
+        if (rt.parse(all_args, pe)) {
+            if (tc == &lnav_data.ld_views[LNV_LOG]) {
+                content_line_t cl;
+                struct exttm tm;
+                vis_line_t vl;
+                logline *ll;
+
+                vl = tc->get_top();
+                cl = lnav_data.ld_log_source.at(vl);
+                ll = lnav_data.ld_log_source.find_line(cl);
+                ll->to_exttm(tm);
+                rt.add(tm);
+
+                tv.tv_sec = timegm(&tm.et_tm);
+                tv.tv_usec = tm.et_nsec / 1000;
+
+                tv_set = true;
+            }
+            else {
+                retval = "error: relative time values only work in the log view";
+            }
+        }
+        else if (dts.convert_to_timeval(all_args, tv)) {
+            if (tc == &lnav_data.ld_views[LNV_LOG]) {
+                tv_set = true;
+            }
+            else {
+                retval = "error: time values only work in the log view";
+            }
+        }
+
+        if (tv_set) {
+            char time_text[256];
+            string relation;
+
+            sql_strftime(time_text, sizeof(time_text), tv);
+            if (args[0] == "hide-lines-before") {
+                lss.set_min_log_time(tv);
+                relation = "before";
+            }
+            else {
+                lss.set_max_log_time(tv);
+                relation = "after";
+            }
+            rebuild_indexes(true);
+
+            retval = "info: hiding lines " + relation + " " + time_text;
+        }
+    }
+
+    return retval;
+}
+
+static string com_show_lines(string cmdline, vector<string> &args)
+{
+    string retval = "info: showing lines";
+
+    if (!args.empty()) {
+        logfile_sub_source &lss = lnav_data.ld_log_source;
+        textview_curses *tc = lnav_data.ld_view_stack.top();
+
+        if (tc == &lnav_data.ld_views[LNV_LOG]) {
+            lss.clear_min_max_log_times();
+        }
+
+        rebuild_indexes(true);
+    }
+
+    return retval;
+}
+
 static string com_rebuild(string cmdline, vector<string> &args)
 {
     if (args.empty()) {
@@ -1666,6 +2084,18 @@ static string com_shexec(string cmdline, vector<string> &args)
     return "";
 }
 
+static string com_poll_now(string cmdline, vector<string> &args)
+{
+    if (args.empty()) {
+
+    }
+    else {
+        lnav_data.ld_curl_looper.process_all();
+    }
+
+    return "";
+}
+
 static string com_redraw(string cmdline, vector<string> &args)
 {
     if (args.empty()) {
@@ -1673,53 +2103,380 @@ static string com_redraw(string cmdline, vector<string> &args)
     }
     else if (lnav_data.ld_window) {
         redrawwin(lnav_data.ld_window);
-        if (lnav_data.ld_rl_view != NULL) {
-            lnav_data.ld_rl_view->set_alt_value(HELP_MSG_1(
-                    CTRL-L, "to redraw the window"));
-        }
     }
 
     return "";
 }
 
+static string com_echo(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a message";
+
+    if (args.empty()) {
+
+    }
+    else if (args.size() > 1) {
+        bool lf = true;
+
+        if (args.size() > 2 && args[1] == "-n") {
+            lf = false;
+        }
+        retval = remaining_args(cmdline, args, lf ? 1 : 2);
+        if (lnav_data.ld_flags & LNF_HEADLESS) {
+            printf("%s", retval.c_str());
+            if (lf) {
+                putc('\n', stdout);
+            }
+            fflush(stdout);
+        }
+    }
+
+    return retval;
+}
+
+static string com_eval(string cmdline, vector<string> &args)
+{
+    string retval = "error: expecting a command or query to evaluate";
+
+    if (args.empty()) {
+
+    }
+    else if (args.size() > 1) {
+        string all_args = remaining_args(cmdline, args);
+        string expanded_cmd;
+        shlex lexer(all_args.c_str(), all_args.size());
+
+        log_debug("Evaluating: %s", all_args.c_str());
+        if (!lexer.eval(expanded_cmd, lnav_data.ld_local_vars.top())) {
+            return "error: invalid arguments";
+        }
+        log_debug("Expanded command to evaluate: %s", expanded_cmd.c_str());
+
+        if (expanded_cmd.empty()) {
+            return "error: empty result after evaluation";
+        }
+
+        string alt_msg;
+        switch (expanded_cmd[0]) {
+            case ':':
+                retval = execute_command(expanded_cmd.substr(1));
+                break;
+            case ';':
+                retval = execute_sql(expanded_cmd.substr(1), alt_msg);
+                break;
+            case '|':
+                retval = "info: executed file -- " + expanded_cmd.substr(1) +
+                        " -- " + execute_file(expanded_cmd.substr(1));
+                break;
+            default:
+                retval = "error: expecting argument to start with ':', ';', "
+                         "or '|' to signify a command, SQL query, or script to execute";
+                break;
+        }
+    }
+
+    return retval;
+}
+
+readline_context::command_t STD_COMMANDS[] = {
+    {
+        "adjust-log-time",
+        "<date>",
+        "Change the timestamps of the top file to be relative to the given date",
+        com_adjust_log_time
+    },
+
+    {
+        "unix-time",
+        "<seconds>",
+        "Convert epoch time to a human-readable form",
+        com_unix_time,
+    },
+    {
+        "current-time",
+        NULL,
+        "Print the current time in human-readable form and seconds since the epoch",
+        com_current_time,
+    },
+    {
+        "goto",
+        "<line#|N%|date>",
+        "Go to the given line number, N percent into the file, or the given timestamp in the log view",
+        com_goto,
+    },
+    {
+        "relative-goto",
+        "<line#|N%>",
+        "Move the current view up or down by the given amount",
+        com_relative_goto,
+    },
+    {
+        "next-mark",
+        "error|warning|search|user|file|partition",
+        "Move to the next bookmark of the given type in the current view",
+        com_goto_mark,
+    },
+    {
+        "prev-mark",
+        "error|warning|search|user|file|partition",
+        "Move to the previous bookmark of the given type in the current view",
+        com_goto_mark,
+    },
+    {
+        "graph",
+        "<regex>",
+        "Graph the number values captured by the given regex that are found in the log view",
+        com_graph,
+    },
+    {
+        "help",
+        NULL,
+        "Open the help text view",
+        com_help,
+    },
+    {
+        "hide-lines-before",
+        "<line#|date>",
+        "Hide lines that come before the given line number or date",
+        com_hide_line,
+    },
+    {
+        "hide-lines-after",
+        "<line#|date>",
+        "Hide lines that come after the given line number or date",
+        com_hide_line,
+    },
+    {
+        "show-lines-before-and-after",
+        NULL,
+        "Show lines that were hidden by the 'hide-lines' commands",
+        com_show_lines,
+    },
+    {
+        "highlight",
+        "<regex>",
+        "Add coloring to log messages fragments that match the given regular expression",
+        com_highlight,
+    },
+    {
+        "clear-highlight",
+        "<regex>",
+        "Remove a previously set highlight regular expression",
+        com_clear_highlight,
+    },
+    {
+        "filter-in",
+        "<regex>",
+        "Only show lines that match the given regular expression in the current view",
+        com_filter,
+    },
+    {
+        "filter-out",
+        "<regex>",
+        "Remove lines that match the given regular expression in the current view",
+        com_filter,
+    },
+    {
+        "delete-filter",
+        "<regex>",
+        "Delete the given filter",
+        com_delete_filter,
+    },
+    {
+        "append-to",
+        "<filename>",
+        "Append marked lines in the current view to the given file",
+        com_save_to,
+    },
+    {
+        "write-to",
+        "<filename>",
+        "Overwrite the given file with any marked lines in the current view",
+        com_save_to,
+    },
+    {
+        "write-csv-to",
+        "<filename>",
+        "Write SQL results to the given file in CSV format",
+        com_save_to,
+    },
+    {
+        "write-json-to",
+        "<filename>",
+        "Write SQL results to the given file in JSON format",
+        com_save_to,
+    },
+    {
+        "pipe-to",
+        "<shell-cmd>",
+        "Pipe the marked lines to the given shell command",
+        com_pipe_to,
+    },
+    {
+        "pipe-line-to",
+        "<shell-cmd>",
+        "Pipe the top line to the given shell command",
+        com_pipe_to,
+    },
+    {
+        "enable-filter",
+        "<regex>",
+        "Enable a previously created and disabled filter",
+        com_enable_filter,
+    },
+    {
+        "disable-filter",
+        "<regex>",
+        "Disable a filter created with filter-in/filter-out",
+        com_disable_filter,
+    },
+    {
+        "enable-word-wrap",
+        NULL,
+        "Enable word-wrapping for the current view",
+        com_enable_word_wrap,
+    },
+    {
+        "disable-word-wrap",
+        NULL,
+        "Disable word-wrapping for the current view",
+        com_disable_word_wrap,
+    },
+    {
+        "create-logline-table",
+        "<table-name>",
+        "Create an SQL table using the top line of the log view as a template",
+        com_create_logline_table,
+    },
+    {
+        "delete-logline-table",
+        "<table-name>",
+        "Delete a table created with create-logline-table",
+        com_delete_logline_table,
+    },
+    {
+        "create-search-table",
+        "<table-name> [<regex>]",
+        "Create an SQL table based on a regex search",
+        com_create_search_table,
+    },
+    {
+        "delete-search-table",
+        "<table-name>",
+        "Delete a table created with create-search-table",
+        com_delete_search_table,
+    },
+    {
+        "open",
+        "<filename>",
+#ifdef HAVE_LIBCURL
+        "Open the given file(s) or URLs in lnav",
+#else
+        "Open the given file(s) in lnav",
+#endif
+        com_open,
+    },
+    {
+        "close",
+        NULL,
+        "Close the top file",
+        com_close,
+    },
+    {
+        "partition-name",
+        "<name>",
+        "Mark the top line in the log view as the start of a new partition with the given name",
+        com_partition_name,
+    },
+    {
+        "clear-partition",
+        NULL,
+        "Clear the partition the top line is a part of",
+        com_clear_partition,
+    },
+    {
+        "pt-min-time",
+        "[<time>]",
+        "Set/get the minimum time for papertrail searches",
+        com_pt_time,
+    },
+    {
+        "pt-max-time",
+        "[<time>]",
+        "Set/get the maximum time for papertrail searches",
+        com_pt_time,
+    },
+    {
+        "session",
+        "<lnav-command>",
+        "Add the given command to the session file (~/.lnav/session)",
+        com_session,
+    },
+    {
+        "summarize",
+        "<column-name>",
+        "Execute a SQL query that computes the characteristics of the values in the given column",
+        com_summarize,
+    },
+    {
+        "switch-to-view",
+        "<view-name>",
+        "Switch to the given view",
+        com_switch_to_view,
+    },
+    {
+        "load-session",
+        NULL,
+        "Load the latest session state",
+        com_load_session,
+    },
+    {
+        "save-session",
+        NULL,
+        "Save the current state as a session",
+        com_save_session,
+    },
+    {
+        "set-min-log-level",
+        "<log-level>",
+        "Set the minimum log level to display in the log view",
+        com_set_min_log_level,
+    },
+    {
+        "redraw",
+        NULL,
+        "Do a full redraw of the screen",
+        com_redraw,
+    },
+    {
+        "zoom-to",
+        "<zoom-level>",
+        "Zoom the histogram view to the given level",
+        com_zoom_to,
+    },
+    {
+        "echo",
+        "[-n] <msg>",
+        "Echo the given message",
+        com_echo,
+    },
+    {
+        "eval",
+        "<msg>",
+        "Evaluate the given command/query after doing environment variable substitution",
+        com_eval,
+    },
+
+    { NULL },
+};
+
 void init_lnav_commands(readline_context::command_map_t &cmd_map)
 {
-    cmd_map["adjust-log-time"]      = com_adjust_log_time;
-    cmd_map["unix-time"]            = com_unix_time;
-    cmd_map["current-time"]         = com_current_time;
-    cmd_map["goto"]                 = com_goto;
-    cmd_map["relative-goto"]        = com_relative_goto;
-    cmd_map["next-mark"]            = com_goto_mark;
-    cmd_map["prev-mark"]            = com_goto_mark;
-    cmd_map["graph"]                = com_graph;
-    cmd_map["help"]                 = com_help;
-    cmd_map["highlight"]            = com_highlight;
-    cmd_map["clear-highlight"]      = com_clear_highlight;
-    cmd_map["filter-in"]            = com_filter;
-    cmd_map["filter-out"]           = com_filter;
-    cmd_map["append-to"]            = com_save_to;
-    cmd_map["write-to"]             = com_save_to;
-    cmd_map["write-csv-to"]         = com_save_to;
-    cmd_map["write-json-to"]        = com_save_to;
-    cmd_map["pipe-to"]              = com_pipe_to;
-    cmd_map["pipe-line-to"]         = com_pipe_to;
-    cmd_map["enable-filter"]        = com_enable_filter;
-    cmd_map["disable-filter"]       = com_disable_filter;
-    cmd_map["enable-word-wrap"]     = com_enable_word_wrap;
-    cmd_map["disable-word-wrap"]    = com_disable_word_wrap;
-    cmd_map["create-logline-table"] = com_create_logline_table;
-    cmd_map["delete-logline-table"] = com_delete_logline_table;
-    cmd_map["open"]                 = com_open;
-    cmd_map["close"]                = com_close;
-    cmd_map["partition-name"]       = com_partition_name;
-    cmd_map["clear-partition"]      = com_clear_partition;
-    cmd_map["session"]              = com_session;
-    cmd_map["summarize"]            = com_summarize;
-    cmd_map["switch-to-view"]       = com_switch_to_view;
-    cmd_map["load-session"]         = com_load_session;
-    cmd_map["save-session"]         = com_save_session;
-    cmd_map["set-min-log-level"]    = com_set_min_log_level;
-    cmd_map["redraw"]               = com_redraw;
+    for (int lpc = 0; STD_COMMANDS[lpc].c_name != NULL; lpc++) {
+        readline_context::command_t &cmd = STD_COMMANDS[lpc];
+
+        cmd_map[cmd.c_name] = cmd;
+    }
 
     if (getenv("LNAV_SRC") != NULL) {
         cmd_map["add-test"] = com_add_test;
@@ -1727,5 +2484,6 @@ void init_lnav_commands(readline_context::command_map_t &cmd_map)
     if (getenv("lnav_test") != NULL) {
         cmd_map["rebuild"] = com_rebuild;
         cmd_map["shexec"] = com_shexec;
+        cmd_map["poll-now"] = com_poll_now;
     }
 }

@@ -32,13 +32,22 @@
 #ifndef __log_format_loader_hh
 #define __log_format_loader_hh
 
+#include <sqlite3.h>
+
 #include <vector>
 #include <string>
 
-std::vector<std::string> load_format_file(
+std::vector<intern_string_t> load_format_file(
         const std::string &filename, std::vector<std::string> &errors);
 
 void load_formats(const std::vector<std::string> &extra_paths,
                   std::vector<std::string> &errors);
+
+void load_format_extra(sqlite3 *db,
+                       const std::vector<std::string> &extra_paths,
+                       std::vector<std::string> &errors);
+
+void find_format_scripts(const std::vector<std::string> &extra_paths,
+                         std::map<std::string, std::vector<std::string> > &scripts);
 
 #endif

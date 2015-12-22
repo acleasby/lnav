@@ -48,7 +48,13 @@
 class log_data_helper
 {
 public:
-    log_data_helper(logfile_sub_source &lss) : ldh_log_source(lss) { };
+    log_data_helper(logfile_sub_source &lss)
+            : ldh_log_source(lss),
+              ldh_file(NULL),
+              ldh_y_offset(0)
+    {
+
+    };
 
     void clear() {
         this->ldh_file = NULL;
@@ -88,8 +94,8 @@ public:
             struct line_range body;
             string_attrs_t    sa;
 
-            this->ldh_file->read_full_message(ll, this->ldh_msg);
             this->ldh_line_values.clear();
+            this->ldh_file->read_full_message(ll, this->ldh_msg);
             format->annotate(this->ldh_msg, sa, this->ldh_line_values);
 
             body = find_string_attr_range(sa, &textview_curses::SA_BODY);
@@ -112,10 +118,12 @@ public:
                 case logline_value::VALUE_JSON: {
                     json_ptr_walk jpw;
 
-                    jpw.parse(iter->lv_sbr.get_data(), iter->lv_sbr.length());
-                    this->ldh_json_pairs[iter->lv_name] = jpw.jpw_values;
+                    if (jpw.parse(iter->lv_sbr.get_data(), iter->lv_sbr.length()) == yajl_status_ok &&
+                        jpw.complete_parse() == yajl_status_ok) {
+                        this->ldh_json_pairs[iter->lv_name] = jpw.jpw_values;
                     }
                     break;
+                }
                 default:
                     break;
                 }
@@ -167,7 +175,7 @@ public:
 
         qname = sql_quote_ident(field.get());
         jget = sqlite3_mprintf("jget(%s,%Q)", qname.in(),
-            this->ldh_json_pairs[field][index].first.c_str());
+            this->ldh_json_pairs[field][index].wt_ptr.c_str());
         retval = std::string(jget);
 
         return retval;
@@ -184,7 +192,7 @@ public:
     std::auto_ptr<data_parser> ldh_parser;
     std::auto_ptr<column_namer> ldh_namer;
     std::vector<logline_value> ldh_line_values;
-    std::map<const intern_string_t, json_ptr_walk::pair_list_t> ldh_json_pairs;
+    std::map<const intern_string_t, json_ptr_walk::walk_list_t> ldh_json_pairs;
 };
 
 #endif

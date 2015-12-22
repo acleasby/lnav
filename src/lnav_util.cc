@@ -36,13 +36,28 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <wordexp.h>
 
 #include <sqlite3.h>
 
+#include <fstream>
+
 #include "auto_fd.hh"
 #include "lnav_util.hh"
+#include "pcrepp.hh"
+#include "lnav_config.hh"
 
 using namespace std;
+
+bool is_url(const char *fn)
+{
+    static pcrepp url_re("^(file|https?|ftps?||scp|sftp):");
+
+    pcre_context_static<30> pc;
+    pcre_input pi(fn);
+
+    return url_re.match(pc, pi);
+}
 
 std::string hash_string(const std::string &str)
 {
@@ -56,16 +71,62 @@ std::string hash_string(const std::string &str)
     return hash.to_string();
 }
 
+std::string hash_bytes(const char *str1, size_t s1len, ...)
+{
+    byte_array<2, uint64> hash;
+    SpookyHash context;
+    va_list args;
+
+    va_start(args, s1len);
+
+    context.Init(0, 0);
+    while (str1 != NULL) {
+        context.Update(str1, s1len);
+
+        str1 = va_arg(args, const char *);
+        if (str1 == NULL) {
+            break;
+        }
+        s1len = va_arg(args, size_t);
+    }
+    context.Final(hash.out(0), hash.out(1));
+
+    va_end(args);
+
+    return hash.to_string();
+}
+
 size_t unquote(char *dst, const char *str, size_t len)
 {
+    if (str[0] == 'r' || str[0] == 'u') {
+        str += 1;
+        len -= 1;
+    }
     char quote_char = str[0];
     size_t index = 0;
 
     require(str[0] == '\'' || str[0] == '"');
 
-    for (int lpc = 1; lpc < (len - 1); lpc++, index++) {
+    for (size_t lpc = 1; lpc < (len - 1); lpc++, index++) {
         dst[index] = str[lpc];
         if (str[lpc] == quote_char) {
+            lpc += 1;
+        }
+        else if (str[lpc] == '\\' && (lpc + 1) < len) {
+            switch (str[lpc] + 1) {
+                case 'n':
+                    dst[index] = '\n';
+                    break;
+                case 'r':
+                    dst[index] = '\r';
+                    break;
+                case 't':
+                    dst[index] = '\t';
+                    break;
+                default:
+                    dst[index] = str[lpc + 1];
+                    break;
+            }
             lpc += 1;
         }
     }
@@ -161,6 +222,27 @@ bool change_to_parent_dir(void)
     }
 
     return retval;
+}
+
+std::pair<std::string, std::string> split_path(const char *path, ssize_t len)
+{
+    ssize_t dir_len = len;
+
+    while (dir_len >= 0 && (path[dir_len] == '/' || path[dir_len] == '\\')) {
+        dir_len -= 1;
+    }
+
+    while (dir_len >= 0) {
+        if (path[dir_len] == '/' || path[dir_len] == '\\') {
+            return make_pair(string(path, dir_len),
+                             string(&path[dir_len + 1], len - dir_len));
+        }
+
+        dir_len -= 1;
+    }
+
+    return make_pair(path[0] == '/' ? "/" : ".",
+                     path[0] == '/' ? string(&path[1], len - 1) : string(path, len));
 }
 
 file_format_t detect_file_format(const std::string &filename)
@@ -310,7 +392,7 @@ struct tm *secs2tm(time_t *tim_p, struct tm *res)
     return (res);
 }
 
-bool next_format(const char *fmt[], int &index, int &locked_index)
+bool next_format(const char * const fmt[], int &index, int &locked_index)
 {
     bool retval = true;
 
@@ -360,7 +442,7 @@ const char *std_time_fmt[] = {
 
 const char *date_time_scanner::scan(const char *time_dest,
                                     size_t time_len,
-                                    const char *time_fmt[],
+                                    const char * const time_fmt[],
                                     struct exttm *tm_out,
                                     struct timeval &tv_out)
 {
@@ -397,6 +479,7 @@ const char *date_time_scanner::scan(const char *time_dest,
                 }
                 tv_out.tv_sec = gmt;
                 tv_out.tv_usec = 0;
+                tm_out->et_flags = ETF_DAY_SET|ETF_MONTH_SET|ETF_YEAR_SET;
 
                 this->dts_fmt_lock = curr_time_fmt;
                 this->dts_fmt_len = off;
@@ -410,7 +493,9 @@ const char *date_time_scanner::scan(const char *time_dest,
             off_t off = 0;
 
 #ifdef HAVE_STRUCT_TM_TM_ZONE
-            tm_out->et_tm.tm_zone = NULL;
+            if (!this->dts_keep_base_tz) {
+                tm_out->et_tm.tm_zone = NULL;
+            }
 #endif
             if (func(tm_out, time_dest, off, time_len)) {
                 retval = &time_dest[off];
@@ -433,46 +518,33 @@ const char *date_time_scanner::scan(const char *time_dest,
                 break;
             }
         }
-        else if ((retval = strptime(time_dest,
-                                    time_fmt[curr_time_fmt],
-                                    &tm_out->et_tm)) != NULL) {
-            if (time_fmt[curr_time_fmt] == time_fmt_with_zone) {
-                int lpc;
+        else {
+            off_t off = 0;
 
-                for (lpc = 0; retval[lpc] && retval[lpc] != ' '; lpc++) {
-
+            if (ptime_fmt(time_fmt[curr_time_fmt], tm_out, time_dest, off, time_len)) {
+                retval = &time_dest[off];
+                if (tm_out->et_tm.tm_year < 70) {
+                    tm_out->et_tm.tm_year = 80;
                 }
-                if (retval[lpc] == ' ' &&
-                    sscanf(&retval[lpc], "%d", &tm_out->et_tm.tm_year) == 1) {
-                    lpc += 1;
-                    for (; retval[lpc] && isdigit(retval[lpc]); lpc++) {
+                if (this->dts_local_time) {
+                    time_t gmt = tm2sec(&tm_out->et_tm);
 
-                    }
-                    retval = &retval[lpc];
-                }
-            }
-
-            if (tm_out->et_tm.tm_year < 70) {
-                tm_out->et_tm.tm_year = 80;
-            }
-            if (this->dts_local_time) {
-                time_t gmt = tm2sec(&tm_out->et_tm);
-
-                localtime_r(&gmt, &tm_out->et_tm);
+                    this->to_localtime(gmt, *tm_out);
 #ifdef HAVE_STRUCT_TM_TM_ZONE
-                tm_out->et_tm.tm_zone = NULL;
+                    tm_out->et_tm.tm_zone = NULL;
 #endif
-                tm_out->et_tm.tm_isdst = 0;
+                    tm_out->et_tm.tm_isdst = 0;
+                }
+
+                tv_out.tv_sec = tm2sec(&tm_out->et_tm);
+                tv_out.tv_usec = tm_out->et_nsec / 1000;
+
+                this->dts_fmt_lock = curr_time_fmt;
+                this->dts_fmt_len  = retval - time_dest;
+
+                found = true;
+                break;
             }
-
-            tv_out.tv_sec = tm2sec(&tm_out->et_tm);
-            tv_out.tv_usec = tm_out->et_nsec / 1000;
-
-            this->dts_fmt_lock = curr_time_fmt;
-            this->dts_fmt_len  = retval - time_dest;
-
-            found = true;
-            break;
         }
     }
 
@@ -484,15 +556,16 @@ const char *date_time_scanner::scan(const char *time_dest,
         /* Try to pull out the milli/micro-second value. */
         if (retval[0] == '.' || retval[0] == ',') {
             off_t off = (retval - time_dest) + 1;
-            int sub_seconds = 0;
 
-            if (ptime_f(sub_seconds, time_dest, off, time_len)) {
-                tv_out.tv_usec = sub_seconds;
+            if (ptime_f(tm_out, time_dest, off, time_len)) {
+                tv_out.tv_usec = tm_out->et_nsec / 1000;
                 this->dts_fmt_len += 7;
+                retval += 7;
             }
-            else if (ptime_F(sub_seconds, time_dest, off, time_len)) {
-                tv_out.tv_usec = sub_seconds * 1000;
+            else if (ptime_F(tm_out, time_dest, off, time_len)) {
+                tv_out.tv_usec = tm_out->et_nsec / 1000;
                 this->dts_fmt_len += 4;
+                retval += 4;
             }
         }
     }
@@ -547,4 +620,47 @@ string build_path(const vector<string> &paths)
     }
     retval += ":" + string(getenv("PATH"));
     return retval;
+}
+
+bool read_file(const char *filename, string &out)
+{
+    std::ifstream sql_file(filename);
+
+    if (sql_file) {
+        out.assign((std::istreambuf_iterator<char>(sql_file)),
+                   std::istreambuf_iterator<char>());
+        return true;
+    }
+
+    return false;
+}
+
+bool wordexperr(int rc, string &msg)
+{
+    switch (rc) {
+        case WRDE_BADCHAR:
+            msg = "error: invalid filename character";
+            return false;
+
+        case WRDE_CMDSUB:
+            msg = "error: command substitution is not allowed";
+            return false;
+
+        case WRDE_BADVAL:
+            msg = "error: unknown environment variable in file name";
+            return false;
+
+        case WRDE_NOSPACE:
+            msg = "error: out of memory";
+            return false;
+
+        case WRDE_SYNTAX:
+            msg = "error: invalid syntax";
+            return false;
+
+        default:
+            break;
+    }
+
+    return true;
 }

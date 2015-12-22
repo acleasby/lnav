@@ -38,4 +38,5 @@
  * Initialize the given map with the builtin lnav commands.
  */
 void init_lnav_commands(readline_context::command_map_t &cmd_map);
+
 #endif

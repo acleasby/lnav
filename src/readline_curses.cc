@@ -58,6 +58,7 @@
 #include "pcrepp.hh"
 #include "auto_mem.hh"
 #include "lnav_log.hh"
+#include "lnav_util.hh"
 #include "ansi_scrubber.hh"
 #include "readline_curses.hh"
 
@@ -144,6 +145,22 @@ static int sendstring(int sock, const char *buf, size_t len)
     return 0;
 }
 
+static int sendcmd(int sock, char cmd, const char *buf, size_t len)
+{
+    size_t total_len = len + 2;
+    char prefix[2] = { cmd, ':' };
+
+    if (sendall(sock, (char *)&total_len, sizeof(total_len)) == -1) {
+        return -1;
+    }
+    else if (sendall(sock, prefix, sizeof(prefix)) == -1 ||
+             sendall(sock, buf, len) == -1) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static int recvall(int sock, char *buf, size_t len)
 {
     off_t offset = 0;
@@ -180,7 +197,7 @@ static ssize_t recvstring(int sock, char *buf, size_t len)
     if (recvall(sock, (char *)&retval, sizeof(retval)) == -1) {
         return -1;
     }
-    else if (retval > len) {
+    else if (retval > (ssize_t)len) {
         return -1;
     }
     else if (recvall(sock, buf, retval) == -1) {
@@ -207,10 +224,14 @@ char *readline_context::completion_generator(const char *text, int state)
                  iter != arg_possibilities->end();
                  ++iter) {
                 int (*cmpfunc)(const char *, const char *, size_t);
+                const char *poss_str = iter->c_str();
 
                 cmpfunc = (loaded_context->is_case_sensitive() ?
                            strncmp : strncasecmp);
-                if (cmpfunc(text, iter->c_str(), len) == 0) {
+                // Check for an exact match and for the quoted version.
+                if (cmpfunc(text, poss_str, len) == 0 ||
+                        ((strchr(loaded_context->rc_quote_chars, poss_str[0]) != NULL) &&
+                         cmpfunc(text, &poss_str[1], len) == 0)) {
                     matches.push_back(*iter);
                 }
             }
@@ -293,8 +314,6 @@ readline_curses::readline_curses()
     struct winsize ws;
     int            sp[2];
 
-    log_info("readline: %s", rl_library_version);
-
     if (socketpair(PF_UNIX, SOCK_STREAM, 0, sp) < 0) {
         throw error(errno);
     }
@@ -311,6 +330,7 @@ readline_curses::readline_curses()
                 NULL,
                 NULL,
                 &ws) < 0) {
+        perror("error: failed to open terminal(openpty)");
         throw error(errno);
     }
 
@@ -457,6 +477,15 @@ void readline_curses::start(void)
                     this->line_ready("");
                     rl_callback_handler_remove();
                 }
+                else {
+                    if (sendcmd(this->rc_command_pipe[RCF_SLAVE],
+                                'l',
+                                rl_line_buffer,
+                                rl_end) != 0) {
+                        perror("line: write failed");
+                        _exit(1);
+                    }
+                }
             }
             if (FD_ISSET(this->rc_command_pipe[RCF_SLAVE], &ready_rfds)) {
                 char msg[1024 + 1];
@@ -478,6 +507,13 @@ void readline_curses::start(void)
                         rl_callback_handler_install(&msg[prompt_start],
                                                     line_ready_tramp);
                         last_match_str_valid = false;
+                        if (sendcmd(this->rc_command_pipe[RCF_SLAVE],
+                                    'l',
+                                    rl_line_buffer,
+                                    rl_end) != 0) {
+                            perror("line: write failed");
+                            _exit(1);
+                        }
                     }
                     else if (strcmp(msg, "a") == 0) {
                         char reply[4];
@@ -529,13 +565,11 @@ void readline_curses::start(void)
         }
 
         if (got_timeout) {
-            char msg[1024];
-
             got_timeout = 0;
-            snprintf(msg, sizeof(msg), "t:%s", rl_line_buffer);
-            if (sendstring(this->rc_command_pipe[RCF_SLAVE],
-                           msg,
-                           strlen(msg)) == -1) {
+            if (sendcmd(this->rc_command_pipe[RCF_SLAVE],
+                        't',
+                        rl_line_buffer,
+                        rl_end) == -1) {
                 _exit(1);
             }
         }
@@ -639,11 +673,11 @@ void readline_curses::line_ready(const char *line)
     }
 }
 
-void readline_curses::check_fd_set(fd_set &ready_rfds)
+void readline_curses::check_poll_set(const vector<struct pollfd> &pollfds)
 {
     int rc;
 
-    if (FD_ISSET(this->rc_pty[RCF_MASTER], &ready_rfds)) {
+    if (pollfd_ready(pollfds, this->rc_pty[RCF_MASTER])) {
         char buffer[128];
 
         rc = read(this->rc_pty[RCF_MASTER], buffer, sizeof(buffer));
@@ -651,7 +685,7 @@ void readline_curses::check_fd_set(fd_set &ready_rfds)
             this->map_output(buffer, rc);
         }
     }
-    if (FD_ISSET(this->rc_command_pipe[RCF_MASTER], &ready_rfds)) {
+    if (pollfd_ready(pollfds, this->rc_command_pipe[RCF_MASTER])) {
         char msg[1024 + 1];
 
         rc = recvstring(this->rc_command_pipe[RCF_MASTER], msg, sizeof(msg) - 1);
@@ -692,6 +726,7 @@ void readline_curses::check_fd_set(fd_set &ready_rfds)
                     this->rc_matches.clear();
                     this->rc_abort.invoke(this);
                     this->rc_display_match.invoke(this);
+                    this->rc_blur.invoke(this);
                     curs_set(0);
                     break;
 
@@ -707,7 +742,13 @@ void readline_curses::check_fd_set(fd_set &ready_rfds)
                     this->rc_matches.clear();
                     this->rc_perform.invoke(this);
                     this->rc_display_match.invoke(this);
+                    this->rc_blur.invoke(this);
                     curs_set(0);
+                    break;
+
+                case 'l':
+                    this->rc_line_buffer = &msg[2];
+                    this->rc_change.invoke(this);
                     break;
 
                 case 'n':

@@ -97,7 +97,7 @@ public:
             }
         }
 
-        this->sf_value = value;
+        this->sf_value.with_string(value);
 
         if (this->sf_cylon) {
             struct line_range lr(this->sf_cylon_pos, this->sf_width);
@@ -234,6 +234,8 @@ public:
         unsigned long width, height;
 
         getmaxyx(this->sc_window, height, width);
+        // Silence the compiler. Remove this if height is used at a later stage.
+        (void)height;
         remaining = width - 4;
         for (int field = 0; field < field_count; field++) {
             status_field &sf = this->sc_source->statusview_value_for_field(

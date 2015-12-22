@@ -13,6 +13,10 @@ BIN2C_V = $(BIN2C_V_@AM_V@)
 BIN2C_V_ = $(BIN2C_V_@AM_DEFAULT_V@)
 BIN2C_V_0 = @echo "  BIN2C   " $@;
 
+RE2C_V = $(RE2C_V_@AM_V@)
+RE2C_V_ = $(RE2C_V_@AM_DEFAULT_V@)
+RE2C_V_0 = @echo "  RE2C   " $@;
+
 help.c: $(srcdir)/help.txt bin2c
 	$(BIN2C_V)./bin2c -z -c $(srcdir)/help.txt $@
 
@@ -22,17 +26,16 @@ dump-pid-sh.c: $(srcdir)/dump-pid.sh bin2c
 default-log-formats-json.c: $(srcdir)/default-log-formats.json bin2c
 	$(BIN2C_V)./bin2c -z -c $(srcdir)/default-log-formats.json $@
 
-init.sql: $(srcdir)/init_sql.py
-	$(PYTHON) $(srcdir)/init_sql.py > $@
-
-init-sql.c: $(srcdir)/init.sql bin2c
+init-sql.c: bin2c
 	$(BIN2C_V)./bin2c -z -c $(srcdir)/init.sql $@
 
 TIME_FORMATS = \
     "%Y-%m-%d %H:%M:%S" \
     "%Y-%m-%d %H:%M" \
-    "%Y-%m-%dT%H:%M:%S" \
+    "%Y-%m-%dT%H:%M:%S.%f%z" \
+    "%y-%m-%dT%H:%M:%S.%f%z" \
     "%Y-%m-%dT%H:%M:%SZ" \
+    "%Y-%m-%dT%H:%M:%S" \
     "%Y/%m/%d %H:%M:%S" \
     "%Y/%m/%d %H:%M" \
     "%a %b %d %H:%M:%S %Y" \
@@ -44,13 +47,26 @@ TIME_FORMATS = \
     "%b %d %H:%M:%S" \
     "%m/%d/%y %H:%M:%S" \
     "%m/%d/%Y %I:%M:%S:%L %p %Z" \
-    "%N/%e/%Y %l:%M:%S %p" \
+    "%m/%e/%Y %l:%M:%S %p" \
+    "%d-%a-%Y;%H:%M:%S.%L" \
     "%m%d %H:%M:%S" \
     "%H:%M:%S" \
-    "%M:%S"
+    "%M:%S" \
+    "%m/%d %H:%M:%S" \
+    "%Y-%m-%d" \
+    "%Y-%m" \
+    "%Y/%m/%d" \
+    "%Y/%m" \
+    $()
 
 time_fmts.cc: ptimec
 	$(PTIME_V)./ptimec $(TIME_FORMATS) > $@
+
+if HAVE_RE2C
+%.cc: %.re
+	$(RE2C_V)$(RE2C_CMD) -o $@ $<
+	$(REC2_V)test $@ -ef $(srcdir)/$*.cc || cp $@ $(srcdir)/$*.cc
+endif
 
 AM_LDFLAGS = \
 	$(STATIC_LDFLAGS) \
@@ -63,13 +79,15 @@ AM_CPPFLAGS = \
 	-DSYSCONFDIR='"$(sysconfdir)"' \
 	-Wall \
 	$(READLINE_CFLAGS) \
-	$(SQLITE3_CFLAGS)
+	$(SQLITE3_CFLAGS) \
+	$(LIBCURL_CPPFLAGS)
 
 LDADD = \
 	libdiag.a \
 	$(READLINE_LIBS) \
 	$(CURSES_LIB) \
 	$(SQLITE3_LIBS) \
+	$(LIBCURL) \
 	-lpcrecpp
 
 dist_noinst_DATA = \
@@ -77,6 +95,7 @@ dist_noinst_DATA = \
 	dump-pid.sh
 
 noinst_HEADERS = \
+	all_logs_vtab.hh \
 	ansi_scrubber.hh \
 	auto_fd.hh \
 	auto_mem.hh \
@@ -86,12 +105,16 @@ noinst_HEADERS = \
 	byte_array.hh \
 	chunky_index.hh \
 	column_namer.hh \
+	command_executor.hh \
 	concise_index.hh \
+	curl_looper.hh \
 	data_scanner.hh \
+	data_scanner_re.re \
 	data_parser.hh \
 	default-log-formats-json.hh \
 	db_sub_source.hh \
 	environ_vtab.hh \
+	field_overlay_source.hh \
 	filter_observer.hh \
 	format-text-files.hh \
 	grapher.hh \
@@ -100,6 +123,7 @@ noinst_HEADERS = \
 	help.hh \
 	help.txt \
 	hist_source.hh \
+	hotkeys.hh \
 	init.sql \
 	init-sql.hh \
 	intern_string.hh \
@@ -118,18 +142,26 @@ noinst_HEADERS = \
     log_data_table.hh \
 	log_format.hh \
 	log_format_loader.hh \
+	log_search_table.hh \
 	logfile.hh \
 	logfile_sub_source.hh \
+	papertrail_proc.hh \
 	pcrepp.hh \
 	piper_proc.hh \
+	plain_text_source.hh \
 	pretty_printer.hh \
+	pthreadpp.hh \
 	ptimec.hh \
+	readline_callbacks.hh \
 	readline_curses.hh \
 	readline_highlighters.hh \
+	readline_possibilities.hh \
+	relative_time.hh \
 	sequence_matcher.hh \
 	sequence_sink.hh \
 	session_data.hh \
 	shared_buffer.hh \
+	shlex.hh \
 	sql_util.hh \
 	sqlite-extension-func.h \
     status_controllers.hh \
@@ -142,8 +174,11 @@ noinst_HEADERS = \
 	textfile_sub_source.hh \
 	textview_curses.hh \
 	time_T.hh \
+	timer.hh \
 	top_status_source.hh \
+	url_loader.hh \
 	view_curses.hh \
+	views_vtab.hh \
 	vt52_curses.hh \
 	log_vtab_impl.hh \
 	log_format_impls.cc \
@@ -171,12 +206,16 @@ libdiag_a_SOURCES = \
 	ansi_scrubber.cc \
 	bookmarks.cc \
 	collation-functions.cc \
+	command_executor.cc \
+	curl_looper.cc \
 	db_sub_source.cc \
 	environ_vtab.cc \
 	extension-functions.c \
+	field_overlay_source.cc \
     fs-extension-functions.cc \
 	grep_proc.cc \
 	hist_source.cc \
+	hotkeys.cc \
 	intern_string.cc \
 	json-extension-functions.cc \
 	json_op.cc \
@@ -194,16 +233,24 @@ libdiag_a_SOURCES = \
 	logfile_sub_source.cc \
 	network-extension-functions.cc \
 	data_scanner.cc \
+	data_scanner_re.cc \
 	data_parser.cc \
+	papertrail_proc.cc \
+	pretty_printer.cc \
 	ptimec_rt.cc \
+	readline_callbacks.cc \
 	readline_curses.cc \
 	readline_highlighters.cc \
+	readline_possibilities.cc \
+	relative_time.cc \
 	session_data.cc \
 	sequence_matcher.cc \
 	shared_buffer.cc \
+	shlex.cc \
 	sqlite-extension-func.c \
 	statusview_curses.cc \
 	string-extension-functions.cc \
+	timer.cc \
 	pcrepp.cc \
 	piper_proc.cc \
 	sql_util.cc \
@@ -211,8 +258,10 @@ libdiag_a_SOURCES = \
 	strnatcmp.c \
 	sysclip.cc \
 	textview_curses.cc \
+	time-extension-functions.cc \
 	time_fmts.cc \
 	view_curses.cc \
+	views_vtab.cc \
 	vt52_curses.cc \
 	log_vtab_impl.cc \
 	xterm_mouse.cc \
@@ -237,10 +286,6 @@ libdiag_a_SOURCES += yajl/yajl.c \
 	yajl/yajl_version.c
 endif
 
-
-dist_noinst_SCRIPTS = \
-	init_sql.py
-
 TEXT2C_FILES = \
 	dump-pid-sh.o \
 	help.o \
@@ -264,6 +309,7 @@ ptimec_SOURCES = ptimec.cc
 ptimec_LDADD =
 
 DISTCLEANFILES = \
+	data_scanner_re.cc \
 	dump-pid-sh.c \
 	help.c \
 	init-sql.c \

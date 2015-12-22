@@ -40,6 +40,8 @@
 #include <sys/types.h>
 #include <arpa/inet.h>
 
+struct tm *secs2tm(time_t *tim_p, struct tm *res);
+
 enum exttm_bits_t {
     ETB_YEAR_SET,
     ETB_MONTH_SET,
@@ -56,6 +58,7 @@ struct exttm {
     struct tm et_tm;
     int32_t et_nsec;
     int et_flags;
+    long et_gmtoff;
 };
 
 #define PTIME_CONSUME(amount, block) \
@@ -162,6 +165,22 @@ inline bool ptime_S(struct exttm *dst, const char *str, off_t &off_inout, ssize_
     return (dst->et_tm.tm_sec >= 0 && dst->et_tm.tm_sec <= 59);
 }
 
+inline bool ptime_s(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
+{
+    time_t epoch = 0;
+
+    while (off_inout < len && isdigit(str[off_inout])) {
+        epoch *= 10;
+        epoch += str[off_inout] - '0';
+        off_inout += 1;
+    }
+
+    secs2tm(&epoch, &dst->et_tm);
+    dst->et_flags = ETF_DAY_SET|ETF_MONTH_SET|ETF_YEAR_SET;
+
+    return (epoch > 0);
+}
+
 inline bool ptime_L(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
     int ms = 0;
@@ -208,6 +227,25 @@ inline bool ptime_H(struct exttm *dst, const char *str, off_t &off_inout, ssize_
     });
 
     return (dst->et_tm.tm_hour >= 0 && dst->et_tm.tm_hour <= 23);
+}
+
+inline bool ptime_i(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
+{
+    uint64_t epoch_ms = 0;
+    time_t epoch;
+
+    while (off_inout < len && isdigit(str[off_inout])) {
+        epoch_ms *= 10;
+        epoch_ms += str[off_inout] - '0';
+        off_inout += 1;
+    }
+
+    dst->et_nsec = (epoch_ms % 1000ULL) * 1000000;
+    epoch = (epoch_ms / 1000ULL);
+    secs2tm(&epoch, &dst->et_tm);
+    dst->et_flags = ETF_DAY_SET|ETF_MONTH_SET|ETF_YEAR_SET;
+
+    return (epoch_ms > 0);
 }
 
 inline bool ptime_I(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
@@ -268,11 +306,11 @@ inline bool ptime_e(struct exttm *dst, const char *str, off_t &off_inout, ssize_
     return false;
 }
 
-inline bool ptime_N(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
+inline bool ptime_m(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
     dst->et_tm.tm_mon = 0;
     PTIME_CONSUME(1, {
-        if (str[off_inout] < '1' || str[off_inout] > '9') {
+        if (str[off_inout] < '0' || str[off_inout] > '9') {
             return false;
         }
         dst->et_tm.tm_mon = str[off_inout] - '0';
@@ -334,22 +372,6 @@ inline bool ptime_l(struct exttm *dst, const char *str, off_t &off_inout, ssize_
     return (dst->et_tm.tm_hour >= 1 && dst->et_tm.tm_hour <= 12);
 }
 
-inline bool ptime_m(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
-{
-    PTIME_CONSUME(2, {
-        if (str[off_inout + 1] > '9') {
-            return false;
-        }
-        dst->et_tm.tm_mon = ((str[off_inout] - '0') * 10 + (str[off_inout + 1] - '0')) - 1;
-    });
-
-    if (0 <= dst->et_tm.tm_mon && dst->et_tm.tm_mon <= 11) {
-        dst->et_flags |= ETF_MONTH_SET;
-        return true;
-    }
-    return false;
-}
-
 inline bool ptime_p(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
     PTIME_CONSUME(2, {
@@ -392,24 +414,21 @@ inline bool ptime_y(struct exttm *dst, const char *str, off_t &off_inout, ssize_
         dst->et_tm.tm_year = (
             (str[off_inout + 0] - '0') * 10 +
             (str[off_inout + 1] - '0') *  1);
-
-        if (dst->et_tm.tm_year >= 0 && dst->et_tm.tm_year < 100) {
-            if (dst->et_tm.tm_year < 69) {
-                dst->et_tm.tm_year += 100;
-            }
-
-            dst->et_flags |= ETF_YEAR_SET;
-            return true;
-        }
-        return false;
     });
 
-    return true;
+    if (dst->et_tm.tm_year >= 0 && dst->et_tm.tm_year < 100) {
+        if (dst->et_tm.tm_year < 69) {
+            dst->et_tm.tm_year += 100;
+        }
+
+        dst->et_flags |= ETF_YEAR_SET;
+        return true;
+    }
+    return false;
 }
 
 inline bool ptime_z(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
-#ifdef HAVE_STRUCT_TM_TM_ZONE
     PTIME_CONSUME(5, {
         long sign;
         long hours;
@@ -431,14 +450,16 @@ inline bool ptime_z(struct exttm *dst, const char *str, off_t &off_inout, ssize_
         mins = (
             (str[off_inout + 2] - '0') *   10 +
             (str[off_inout + 3] - '0') *    1) * 60;
+        dst->et_gmtoff = sign * (hours + mins);
+#ifdef HAVE_STRUCT_TM_TM_ZONE
         dst->et_tm.tm_gmtoff = sign * (hours + mins);
-    });
 #endif
+    });
 
     return true;
 }
 
-inline bool ptime_f(int &sub_seconds, const char *str, off_t &off_inout, ssize_t len)
+inline bool ptime_f(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
     PTIME_CONSUME(6, {
         for (int lpc = 0; lpc < 6; lpc++) {
@@ -446,25 +467,25 @@ inline bool ptime_f(int &sub_seconds, const char *str, off_t &off_inout, ssize_t
                 return false;
             }
         }
-        sub_seconds = (
+        dst->et_nsec = (
                 (str[off_inout + 0] - '0') * 100000 +
                 (str[off_inout + 1] - '0') *  10000 +
                 (str[off_inout + 2] - '0') *   1000 +
                 (str[off_inout + 3] - '0') *    100 +
                 (str[off_inout + 4] - '0') *     10 +
-                (str[off_inout + 5] - '0') *      1);
+                (str[off_inout + 5] - '0') *      1) * 1000;
     });
 
     return true;
 }
 
-inline bool ptime_F(int &sub_seconds, const char *str, off_t &off_inout, ssize_t len)
+inline bool ptime_F(struct exttm *dst, const char *str, off_t &off_inout, ssize_t len)
 {
     PTIME_CONSUME(3, {
-        sub_seconds = (
+        dst->et_nsec = (
                         (str[off_inout + 0] - '0') * 100 +
                         (str[off_inout + 1] - '0') *  10 +
-                        (str[off_inout + 2] - '0') *   1);
+                        (str[off_inout + 2] - '0') *   1) * 1000 * 1000;
     });
 
     return true;
@@ -482,6 +503,8 @@ inline bool ptime_char(char val, const char *str, off_t &off_inout, ssize_t len)
 }
 
 typedef bool (*ptime_func)(struct exttm *dst, const char *str, off_t &off, ssize_t len);
+
+bool ptime_fmt(const char *fmt, struct exttm *dst, const char *str, off_t &off, ssize_t len);
 
 struct ptime_fmt {
     const char *pf_fmt;

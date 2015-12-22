@@ -145,7 +145,10 @@ class yajlpp_parse_context {
 public:
     yajlpp_parse_context(std::string source,
                          struct json_path_handler *handlers = NULL)
-        : ypc_source(source), ypc_handlers(handlers), ypc_ignore_unused(false)
+        : ypc_source(source),
+          ypc_handlers(handlers),
+          ypc_userdata(NULL),
+          ypc_ignore_unused(false)
     {
         this->ypc_path.reserve(4096);
         this->ypc_path.push_back('\0');
@@ -185,6 +188,11 @@ public:
 
         this->get_path_fragment(offset, &frag, len);
         return std::string(frag, len);
+    };
+
+    const intern_string_t get_path() const {
+        return intern_string::lookup(&this->ypc_path[1],
+                                     this->ypc_path.size() - 2);
     };
 
     bool is_level(size_t level) const {
@@ -256,6 +264,11 @@ public:
         yajl_gen_string(this->yg_handle, (const unsigned char *)str, strlen(str));
     };
 
+    void operator()(const char *str, size_t len)
+    {
+        yajl_gen_string(this->yg_handle, (const unsigned char *)str, len);
+    };
+
     void operator()(long long value)
     {
         yajl_gen_integer(this->yg_handle, value);
@@ -270,7 +283,6 @@ public:
     {
         yajl_gen_null(this->yg_handle);
     };
-
 private:
     yajl_gen yg_handle;
 };

@@ -43,6 +43,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <poll.h>
 
 #include "lnav_log.hh"
 #include "piper_proc.hh"
@@ -95,7 +96,7 @@ piper_proc::piper_proc(int pipefd, bool timestamp, const char *filename)
         unlink(piper_tmpname);
     }
 
-    fcntl(this->pp_fd.get(), F_SETFD, FD_CLOEXEC);
+    log_perror(fcntl(this->pp_fd.get(), F_SETFD, FD_CLOEXEC));
 
     this->pp_child = fork();
     switch (this->pp_child) {
@@ -128,15 +129,17 @@ piper_proc::piper_proc(int pipefd, bool timestamp, const char *filename)
                 close(fd_to_close);
             }
         }
-        fcntl(infd.get(), F_SETFL, O_NONBLOCK);
+        log_perror(fcntl(infd.get(), F_SETFL, O_NONBLOCK));
         lb.set_fd(infd);
         do {
             line_value lv;
-            fd_set rready;
+            struct pollfd pfd = {
+                    lb.get_fd(),
+                    POLLIN,
+                    0
+            };
 
-            FD_ZERO(&rready);
-            FD_SET(lb.get_fd(), &rready);
-            select(lb.get_fd() + 1, &rready, NULL, NULL, NULL);
+            poll(&pfd, 1, -1);
             last_off = off;
             while (lb.read_line(off, lv, true)) {
                 ssize_t wrc;
@@ -161,13 +164,14 @@ piper_proc::piper_proc(int pipefd, bool timestamp, const char *filename)
                 }
                 woff += wrc;
 
-                if (lv.lv_start[lv.lv_len - 1] != '\n') {
+                if (lv.lv_start[lv.lv_len - 1] != '\n' &&
+                        (off != lb.get_file_size())) {
                     off = last_off;
                     woff = last_woff;
                 }
                 last_off = off;
             }
-        } while (lb.get_file_size() == (ssize_t)-1);
+        } while (lb.is_pipe() && !lb.is_pipe_closed());
 
         if (timestamp) {
             ssize_t wrc;

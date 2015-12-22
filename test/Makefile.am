@@ -2,19 +2,12 @@
 TESTS_ENVIRONMENT = $(SHELL) $(top_builddir)/TESTS_ENVIRONMENT
 LOG_COMPILER = $(SHELL) $(top_builddir)/TESTS_ENVIRONMENT
 
-DBGEN_V = $(DBGEN_V_@AM_V@)
-DBGEN_V_ = $(DBGEN_V_@AM_DEFAULT_V@)
-DBGEN_V_0 = @echo "  DBGEN   " $@;
-
 RM_V = $(RM_V_@AM_V@)
 RM_V_ = $(RM_V_@AM_DEFAULT_V@)
 RM_V_0 = @echo "  RM      " $@;
 
-simple-db.db: simple-db.sql
-	$(RM_V)rm -f $@
-	$(DBGEN_V)$(SQLITE3_CMD) $@ < $(srcdir)/simple-db.sql
-
 AM_CPPFLAGS = \
+	-Wall \
 	-I$(top_srcdir)/src \
 	$(READLINE_CFLAGS) \
 	$(SQLITE3_CFLAGS)
@@ -32,6 +25,7 @@ check_PROGRAMS = \
 	drive_logfile \
 	drive_mvwattrline \
 	drive_sequencer \
+	drive_shlexer \
 	drive_sql \
 	drive_view_colors \
 	drive_vt52_curses \
@@ -51,6 +45,7 @@ check_PROGRAMS = \
 	test_line_buffer2 \
 	test_log_accel \
 	test_pcrepp \
+	test_reltime \
 	test_top_status \
 	test_yajlpp
 
@@ -106,6 +101,9 @@ test_concise_LDADD = ../src/libdiag.a
 test_json_ptr_SOURCES = test_json_ptr.cc
 test_json_ptr_LDADD = ../src/libdiag.a
 
+test_reltime_SOURCES = test_reltime.cc
+test_reltime_LDADD = ../src/libdiag.a
+
 drive_line_buffer_SOURCES = drive_line_buffer.cc
 drive_line_buffer_LDADD = ../src/libdiag.a $(CURSES_LIB) -lz
 
@@ -133,6 +131,9 @@ drive_logfile_LDADD = \
 
 drive_sequencer_SOURCES = drive_sequencer.cc
 drive_sequencer_LDADD = ../src/libdiag.a $(CURSES_LIB) $(SQLITE3_LIBS)
+
+drive_shlexer_SOURCES = drive_shlexer.cc
+drive_shlexer_LDADD = ../src/libdiag.a
 
 drive_data_scanner_SOURCES = \
 	drive_data_scanner.cc
@@ -165,6 +166,7 @@ drive_sql_LDADD = \
 	$(PCRE_LIBS) \
 	$(CURSES_LIB) \
 	$(READLINE_LIBS) \
+	$(LIBCURL) \
 	-lpcrecpp
 
 slicer_SOURCES = slicer.cc
@@ -175,8 +177,12 @@ scripty_LDADD = ../src/libdiag.a
 
 dist_noinst_SCRIPTS = \
 	parser_debugger.py \
+	test_cli.sh \
 	test_cmds.sh \
+	test_curl.sh \
 	test_data_parser.sh \
+	test_format_installer.sh \
+	test_format_loader.sh \
 	test_grep_proc.sh \
 	test_json_format.sh \
 	test_json_op.sh \
@@ -186,16 +192,23 @@ dist_noinst_SCRIPTS = \
 	test_logfile.sh \
 	test_mvwattrline.sh \
 	test_sessions.sh \
+	test_shlexer.sh \
 	test_sql.sh \
 	test_sql_coll_func.sh \
 	test_sql_json_func.sh \
 	test_sql_str_func.sh \
+	test_sql_time_func.sh \
 	test_sql_fs_func.sh \
 	test_view_colors.sh \
-	test_vt52_curses.sh
+	test_vt52_curses.sh \
+	test_pretty_print.sh
 
 dist_noinst_DATA = \
 	ansi-colors.0.in \
+	bad-config/formats/invalid-regex/format.json \
+	bad-config/formats/invalid-sample/format.json \
+	bad-config/formats/invalid-sql/init.sql \
+	bad-config/formats/no-samples/format.json \
 	datafile_simple.0 \
 	datafile_simple.1 \
 	datafile_simple.2 \
@@ -220,38 +233,55 @@ dist_noinst_DATA = \
 	listview_output.6 \
 	logfile_access_log.0 \
 	logfile_access_log.1 \
+	logfile_bad_access_log.0 \
+	logfile_bad_syslog.0 \
+	logfile_blued.0 \
 	logfile_empty.0 \
+	logfile_epoch.0 \
 	logfile_filter.0 \
 	logfile_for_join.0 \
 	logfile_generic.0 \
+	logfile_generic.1 \
+	logfile_generic.2 \
 	logfile_glog.0 \
 	logfile_json.json \
 	logfile_multiline.0 \
+	logfile_nested_json.json \
 	logfile_openam.0 \
 	logfile_plain.0 \
+	logfile_pretty.0 \
 	logfile_strace_log.0 \
 	logfile_syslog.0 \
 	logfile_syslog.1 \
 	logfile_syslog.2 \
+	logfile_syslog_with_access_log.0 \
+	logfile_syslog_with_mixed_times.0 \
 	logfile_tcf.0 \
 	logfile_tcf.1 \
 	logfile_tcsh_history.0 \
+	logfile_vami.0 \
 	logfile_vdsm.0 \
 	logfile_with_a_really_long_name_to_test_a_bug_with_long_names.0 \
+	multiline.lnav \
+	nested.lnav \
 	mvwattrline_output.0 \
-	simple-db.sql \
+	textfile_json_indented.0 \
+	textfile_json_one_line.0 \
+	textfile_quoted_json.0 \
+	toplevel.lnav \
 	view_colors_output.0 \
 	vt52_curses_input.0 \
 	vt52_curses_input.1 \
 	vt52_curses_output.0 \
 	vt52_curses_output.1 \
+	formats/collision/format.json \
 	formats/jsontest/format.json \
+	formats/nestedjson/format.json \
+	formats/sqldir/init.sql \
+	formats/timestamp/format.json \
 	log-samples/sample-27353a72ba4025448f261dcfa6ea16e474187795.txt \
 	log-samples/sample-70c906b3c1a1cf03f15bde92ee78edfa6f9b7960.txt \
 	log-samples/sample-ad31f12d2adabd07e3ddda3ad5b0dbf6b49c4c99.txt
-
-nodist_noinst_DATA = \
-	simple-db.db
 
 TESTS = \
 	test_ansi_scrubber \
@@ -260,6 +290,9 @@ TESTS = \
 	test_bookmarks \
 	test_chunky_index \
 	test_date_time_scanner \
+	test_format_installer.sh \
+	test_format_loader.sh \
+	test_cli.sh \
 	test_cmds.sh \
 	test_concise \
 	test_line_buffer2 \
@@ -275,17 +308,26 @@ TESTS = \
 	test_log_accel \
 	test_logfile.sh \
 	test_pcrepp \
+	test_reltime \
 	test_sessions.sh \
+	test_shlexer.sh \
 	test_sql.sh \
 	test_sql_coll_func.sh \
 	test_sql_json_func.sh \
 	test_sql_fs_func.sh \
 	test_sql_str_func.sh \
+	test_sql_time_func.sh \
 	test_view_colors.sh \
 	test_vt52_curses.sh \
 	test_top_status \
 	test_data_parser.sh \
-	test_yajlpp
+	test_yajlpp \
+	test_pretty_print.sh
+
+if HAVE_LIBCURL
+TESTS += \
+    test_curl.sh
+endif
 
 DISTCLEANFILES = \
 	*.dat \
@@ -299,8 +341,13 @@ DISTCLEANFILES = \
 	*.bz2 \
 	truncfile.0 \
 	logfile_append.0 \
-	test.log
+	test.log \
+	logfile_stdin.log \
+	logfile_syslog.0 \
+	unreadable.log \
+	empty
 
 distclean-local:
 	$(RM_V)rm -rf sessions
 	$(RM_V)rm -rf .lnav
+	$(RM_V)rm -rf ../installer-test-home

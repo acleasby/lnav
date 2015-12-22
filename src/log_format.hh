@@ -40,6 +40,7 @@
 #include <sys/types.h>
 
 #include <set>
+#include <list>
 #include <string>
 #include <vector>
 #include <memory>
@@ -54,6 +55,8 @@
 #include "intern_string.hh"
 #include "shared_buffer.hh"
 
+class log_format;
+
 /**
  * Metadata for a single line in a log file.
  */
@@ -63,6 +66,8 @@ public:
     static string_attr_type L_TIMESTAMP;
     static string_attr_type L_FILE;
     static string_attr_type L_PARTITION;
+    static string_attr_type L_MODULE;
+    static string_attr_type L_OPID;
 
     /**
      * The logging level identifiers for a line(s).
@@ -70,8 +75,13 @@ public:
     typedef enum {
         LEVEL_UNKNOWN,
         LEVEL_TRACE,
+        LEVEL_DEBUG5,
+        LEVEL_DEBUG4,
+        LEVEL_DEBUG3,
+        LEVEL_DEBUG2,
         LEVEL_DEBUG,
         LEVEL_INFO,
+        LEVEL_STATS,
         LEVEL_WARNING,
         LEVEL_ERROR,
         LEVEL_CRITICAL,
@@ -106,12 +116,16 @@ public:
     logline(off_t off,
             time_t t,
             uint16_t millis,
-            level_t l)
+            level_t l,
+            uint8_t mod = 0,
+            uint8_t opid = 0)
         : ll_offset(off),
           ll_time(t),
           ll_millis(millis),
+          ll_opid(opid),
           ll_sub_offset(0),
-          ll_level(l)
+          ll_level(l),
+          ll_module_id(mod)
     {
         memset(this->ll_schema, 0, sizeof(this->ll_schema));
     };
@@ -119,10 +133,13 @@ public:
     logline(off_t off,
             const struct timeval &tv,
             level_t l,
-            uint8_t m = 0)
+            uint8_t mod = 0,
+            uint8_t opid = 0)
         : ll_offset(off),
+          ll_opid(opid),
           ll_sub_offset(0),
-          ll_level(l)
+          ll_level(l),
+          ll_module_id(mod)
     {
         this->set_time(tv);
         memset(this->ll_schema, 0, sizeof(this->ll_schema));
@@ -137,6 +154,11 @@ public:
 
     /** @return The timestamp for the line. */
     time_t get_time() const { return this->ll_time; };
+
+    void to_exttm(struct exttm &tm_out) const {
+        tm_out.et_tm = *gmtime(&this->ll_time);
+        tm_out.et_nsec = this->ll_millis * 1000 * 1000;
+    };
 
     void set_time(time_t t) { this->ll_time = t; };
 
@@ -183,11 +205,23 @@ public:
 
     const char *get_level_name() const
     {
-        return level_names[this->ll_level & 0x0f];
+        return level_names[this->ll_level & ~LEVEL__FLAGS];
     };
 
     bool is_continued(void) const {
         return this->get_level() & LEVEL_CONTINUED;
+    };
+
+    uint8_t get_module_id(void) const {
+        return this->ll_module_id;
+    };
+
+    void set_opid(uint8_t opid) {
+        this->ll_opid = opid;
+    };
+
+    uint8_t get_opid(void) const {
+        return this->ll_opid;
     };
 
     /**
@@ -196,8 +230,7 @@ public:
     bool has_schema(void) const
     {
         return (this->ll_schema[0] != 0 ||
-                this->ll_schema[1] != 0 ||
-                this->ll_schema[2] != 0);
+                this->ll_schema[1] != 0);
     };
 
     /**
@@ -240,16 +273,24 @@ public:
 
     bool operator<(const struct timeval &rhs) const {
         return ((this->ll_time < rhs.tv_sec) ||
-                (this->ll_millis < (rhs.tv_usec / 1000)));
+                ((this->ll_time == rhs.tv_sec) &&
+                 (this->ll_millis < (rhs.tv_usec / 1000))));
     };
 
+    bool operator<=(const struct timeval &rhs) const {
+        return ((this->ll_time <= rhs.tv_sec) ||
+                ((this->ll_time == rhs.tv_sec) &&
+                 (this->ll_millis <= (rhs.tv_usec / 1000))));
+    };
 private:
     off_t    ll_offset;
     time_t   ll_time;
-    uint16_t ll_millis;
+    unsigned int ll_millis : 10;
+    unsigned int ll_opid : 6;
     uint16_t ll_sub_offset;
     uint8_t  ll_level;
-    char     ll_schema[3];
+    uint8_t  ll_module_id;
+    char     ll_schema[2];
 };
 
 enum scale_op_t {
@@ -298,27 +339,40 @@ public:
     static kind_t string2kind(const char *kindstr);
 
     logline_value(const intern_string_t name)
-        : lv_name(name), lv_kind(VALUE_NULL), lv_identifier(), lv_column(-1) { };
+        : lv_name(name), lv_kind(VALUE_NULL), lv_identifier(), lv_column(-1),
+          lv_from_module(false), lv_format(NULL) { };
     logline_value(const intern_string_t name, bool b)
         : lv_name(name),
           lv_kind(VALUE_BOOLEAN),
-          lv_number((int64_t)(b ? 1 : 0)),
+          lv_value((int64_t)(b ? 1 : 0)),
           lv_identifier(),
-          lv_column(-1) { };
+          lv_column(-1),
+          lv_from_module(false), lv_format(NULL) { };
     logline_value(const intern_string_t name, int64_t i)
-        : lv_name(name), lv_kind(VALUE_INTEGER), lv_number(i), lv_identifier(), lv_column(-1) { };
+        : lv_name(name), lv_kind(VALUE_INTEGER), lv_value(i), lv_identifier(), lv_column(-1),
+    lv_from_module(false), lv_format(NULL) { };
     logline_value(const intern_string_t name, double i)
-        : lv_name(name), lv_kind(VALUE_FLOAT), lv_number(i), lv_identifier(), lv_column(-1) { };
-    logline_value(const intern_string_t name, shared_buffer_ref &sbr)
+        : lv_name(name), lv_kind(VALUE_FLOAT), lv_value(i), lv_identifier(), lv_column(-1),
+          lv_from_module(false), lv_format(NULL) { };
+    logline_value(const intern_string_t name, shared_buffer_ref &sbr, int column = -1)
         : lv_name(name), lv_kind(VALUE_TEXT), lv_sbr(sbr),
-          lv_identifier(), lv_column(-1) {
+          lv_identifier(), lv_column(column),
+          lv_from_module(false), lv_format(NULL) {
+    };
+    logline_value(const intern_string_t name, const intern_string_t val, int column = -1)
+            : lv_name(name), lv_kind(VALUE_TEXT), lv_intern_string(val), lv_identifier(),
+              lv_column(column), lv_from_module(false), lv_format(NULL) {
+
     };
     logline_value(const intern_string_t name, kind_t kind, shared_buffer_ref &sbr,
                   bool ident=false, const scaling_factor *scaling=NULL,
-                  int col=-1, int start=-1, int end=-1)
+                  int col=-1, int start=-1, int end=-1, bool from_module=false,
+                  const log_format *format=NULL)
         : lv_name(name), lv_kind(kind),
           lv_identifier(ident), lv_column(col),
-          lv_origin(start, end)
+          lv_origin(start, end),
+          lv_from_module(from_module),
+          lv_format(format)
     {
         if (sbr.get_data() == NULL) {
             this->lv_kind = kind = VALUE_NULL;
@@ -335,9 +389,9 @@ public:
             break;
 
         case VALUE_INTEGER:
-            strtonum(this->lv_number.i, sbr.get_data(), sbr.length());
+            strtonum(this->lv_value.i, sbr.get_data(), sbr.length());
             if (scaling != NULL) {
-                scaling->scale(this->lv_number.i);
+                scaling->scale(this->lv_value.i);
             }
             break;
 
@@ -346,9 +400,9 @@ public:
 
             memcpy(scan_value, sbr.get_data(), sbr.length());
             scan_value[sbr.length()] = '\0';
-            this->lv_number.d = strtod(scan_value, NULL);
+            this->lv_value.d = strtod(scan_value, NULL);
             if (scaling != NULL) {
-                scaling->scale(this->lv_number.d);
+                scaling->scale(this->lv_value.d);
             }
             break;
         }
@@ -356,10 +410,10 @@ public:
         case VALUE_BOOLEAN:
             if (strncmp(sbr.get_data(), "true", sbr.length()) == 0 ||
                 strncmp(sbr.get_data(), "yes", sbr.length()) == 0) {
-                this->lv_number.i = 1;
+                this->lv_value.i = 1;
             }
             else {
-                this->lv_number.i = 0;
+                this->lv_value.i = 0;
             }
             break;
 
@@ -380,6 +434,9 @@ public:
 
         case VALUE_JSON:
         case VALUE_TEXT:
+            if (this->lv_sbr.empty()) {
+                return this->lv_intern_string.to_string();
+            }
             return std::string(this->lv_sbr.get_data(), this->lv_sbr.length());
 
         case VALUE_QUOTED:
@@ -402,15 +459,15 @@ public:
             }
 
         case VALUE_INTEGER:
-            snprintf(buffer, sizeof(buffer), "%" PRId64, this->lv_number.i);
+            snprintf(buffer, sizeof(buffer), "%" PRId64, this->lv_value.i);
             break;
 
         case VALUE_FLOAT:
-            snprintf(buffer, sizeof(buffer), "%lf", this->lv_number.d);
+            snprintf(buffer, sizeof(buffer), "%lf", this->lv_value.d);
             break;
 
         case VALUE_BOOLEAN:
-            if (this->lv_number.i) {
+            if (this->lv_value.i) {
                 return "true";
             }
             else {
@@ -426,6 +483,23 @@ public:
         return std::string(buffer);
     };
 
+    const char *text_value() const {
+        if (this->lv_sbr.empty()) {
+            if (this->lv_intern_string.empty()) {
+                return "";
+            }
+            return this->lv_intern_string.get();
+        }
+        return this->lv_sbr.get_data();
+    };
+
+    const size_t text_length() const {
+        if (this->lv_sbr.empty()) {
+            return this->lv_intern_string.size();
+        }
+        return this->lv_sbr.length();
+    }
+
     intern_string_t lv_name;
     kind_t      lv_kind;
     union value_u {
@@ -435,11 +509,14 @@ public:
         value_u() : i(0) { };
         value_u(int64_t i) : i(i) { };
         value_u(double d) : d(d) { };
-    }           lv_number;
+    } lv_value;
     shared_buffer_ref lv_sbr;
+    intern_string_t lv_intern_string;
     bool lv_identifier;
     int lv_column;
     struct line_range lv_origin;
+    bool lv_from_module;
+    const log_format *lv_format;
 };
 
 struct logline_value_cmp {
@@ -492,6 +569,19 @@ public:
         };
     };
 
+    static log_format *find_root_format(const char *name) {
+        std::vector<log_format *> &fmts = get_root_formats();
+        for (std::vector<log_format *>::iterator iter = fmts.begin();
+             iter != fmts.end();
+             ++iter) {
+            log_format *lf = *iter;
+            if (lf->get_name() == name) {
+                return lf;
+            }
+        }
+        return NULL;
+    }
+
     struct action_def {
         std::string ad_name;
         std::string ad_label;
@@ -505,9 +595,11 @@ public:
         };
     };
 
-    log_format() : lf_fmt_lock(-1),
+    log_format() : lf_mod_index(0),
+                   lf_fmt_lock(-1),
                    lf_timestamp_field(intern_string::lookup("timestamp", -1)) {
     };
+
     virtual ~log_format() { };
 
     virtual void clear(void)
@@ -521,9 +613,15 @@ public:
      *
      * @return The log format name.
      */
-    virtual std::string get_name(void) const = 0;
+    virtual intern_string_t get_name(void) const = 0;
 
     virtual bool match_name(const std::string &filename) { return true; };
+
+    enum scan_result_t {
+        SCAN_MATCH,
+        SCAN_NO_MATCH,
+        SCAN_INCOMPLETE,
+    };
 
     /**
      * Scan a log line to see if it matches this log format.
@@ -534,9 +632,13 @@ public:
      * @param prefix The contents of the line.
      * @param len The length of the prefix string.
      */
-    virtual bool scan(std::vector<logline> &dst,
-                      off_t offset,
-                      shared_buffer_ref &sbr) = 0;
+    virtual scan_result_t scan(std::vector<logline> &dst,
+                               off_t offset,
+                               shared_buffer_ref &sbr) = 0;
+
+    virtual bool scan_for_partial(shared_buffer_ref &sbr, size_t &len_out) {
+        return false;
+    };
 
     /**
      * Remove redundant data from the log line string.
@@ -550,10 +652,11 @@ public:
 
     virtual void annotate(shared_buffer_ref &sbr,
                           string_attrs_t &sa,
-                          std::vector<logline_value> &values) const
+                          std::vector<logline_value> &values,
+                          bool annotate_module = true) const
     { };
 
-    virtual std::auto_ptr<log_format> specialized(void) = 0;
+    virtual std::auto_ptr<log_format> specialized(int fmt_lock = -1) = 0;
 
     virtual log_vtab_impl *get_vtab_impl(void) const {
         return NULL;
@@ -574,18 +677,43 @@ public:
         return retval;
     };
 
-    void check_for_new_year(std::vector<logline> &dst,
-        const struct timeval &log_tv);
+    const char * const *get_timestamp_formats() const {
+        if (this->lf_timestamp_format.empty()) {
+            return NULL;
+        }
 
+        return &this->lf_timestamp_format[0];
+    };
+
+    void check_for_new_year(std::vector<logline> &dst, exttm log_tv,
+                            timeval timeval1);
+
+    virtual std::string get_pattern_name() const {
+        char name[32];
+        snprintf(name, sizeof(name), "builtin (%d)", this->lf_fmt_lock);
+        return name;
+    };
+
+    virtual std::string get_pattern_regex() const {
+        return "";
+    };
+
+    uint8_t lf_mod_index;
     date_time_scanner lf_date_time;
     int lf_fmt_lock;
     intern_string_t lf_timestamp_field;
-    int lf_timestamp_field_index;
+    std::vector<const char *> lf_timestamp_format;
     std::map<std::string, action_def> lf_action_defs;
 protected:
     static std::vector<log_format *> lf_root_formats;
 
     struct pcre_format {
+        pcre_format(const char *regex) : name(regex), pcre(regex) {
+
+        };
+
+        pcre_format() : name(NULL), pcre("") { };
+
         const char *name;
         pcrepp pcre;
     };
@@ -600,6 +728,8 @@ protected:
                           struct timeval *tv_out,
                           ...);
 };
+
+class module_format;
 
 class external_log_format : public log_format {
 
@@ -640,12 +770,28 @@ public:
     };
 
     struct pattern {
-        pattern() : p_pcre(NULL) { };
+        pattern() : p_pcre(NULL),
+                    p_timestamp_field_index(-1),
+                    p_level_field_index(-1),
+                    p_module_field_index(-1),
+                    p_opid_field_index(-1),
+                    p_body_field_index(-1),
+                    p_timestamp_end(-1),
+                    p_module_format(false) {
 
+        };
+
+        std::string p_config_path;
         std::string p_string;
-        std::vector<std::string> p_before_pattern;
         pcrepp *p_pcre;
         std::vector<value_def> p_value_by_index;
+        int p_timestamp_field_index;
+        int p_level_field_index;
+        int p_module_field_index;
+        int p_opid_field_index;
+        int p_body_field_index;
+        int p_timestamp_end;
+        bool p_module_format;
     };
 
     struct level_pattern {
@@ -655,20 +801,26 @@ public:
         pcrepp *lp_pcre;
     };
 
-    external_log_format(const std::string &name)
+    external_log_format(const intern_string_t name)
         : elf_file_pattern(".*"),
           elf_filename_pcre(NULL),
           elf_column_count(0),
           elf_timestamp_divisor(1.0),
+          elf_level_field(intern_string::lookup("level", -1)),
           elf_body_field(intern_string::lookup("body", -1)),
+          elf_multiline(true),
+          elf_container(false),
+          elf_has_module_format(false),
+          elf_builtin_format(false),
           jlf_json(false),
+          jlf_hide_extra(false),
           jlf_cached_offset(-1),
           jlf_yajl_handle(yajl_free),
           elf_name(name) {
             this->jlf_line_offsets.reserve(128);
         };
 
-    std::string get_name(void) const {
+    intern_string_t get_name(void) const {
         return this->elf_name;
     };
 
@@ -679,46 +831,37 @@ public:
         return this->elf_filename_pcre->match(pc, pi);
     };
 
-    bool scan(std::vector<logline> &dst,
-              off_t offset,
-              shared_buffer_ref &sbr);
-    
+    scan_result_t scan(std::vector<logline> &dst,
+                       off_t offset,
+                       shared_buffer_ref &sbr);
+
+    bool scan_for_partial(shared_buffer_ref &sbr, size_t &len_out);
+
     void annotate(shared_buffer_ref &line,
                   string_attrs_t &sa,
-                  std::vector<logline_value> &values) const;
+                  std::vector<logline_value> &values,
+                  bool annotate_module = true) const;
 
     void build(std::vector<std::string> &errors);
 
-    std::auto_ptr<log_format> specialized() {
+    bool match_samples(const std::vector<sample> &samples) const;
+
+    std::auto_ptr<log_format> specialized(int fmt_lock) {
         external_log_format *elf = new external_log_format(*this);
         std::auto_ptr<log_format> retval((log_format *)elf);
 
+        if (fmt_lock != -1) {
+            elf->lf_fmt_lock = fmt_lock;
+        }
+
         if (this->jlf_json) {
-            this->jlf_parse_context.reset(new yajlpp_parse_context(this->elf_name));
+            this->jlf_parse_context.reset(new yajlpp_parse_context(this->elf_name.to_string()));
             this->jlf_yajl_handle.reset(yajl_alloc(
                     &this->jlf_parse_context->ypc_callbacks,
                     NULL,
                     this->jlf_parse_context.get()));
             yajl_config(this->jlf_yajl_handle.in(), yajl_dont_validate_strings, 1);
             this->jlf_cached_line.reserve(16 * 1024);
-        }
-        else if (this->lf_fmt_lock != -1) {
-            pcrepp *pat = this->elf_pattern_order[this->lf_fmt_lock]->p_pcre;
-
-            retval->lf_timestamp_field_index = pat->name_index(
-                    this->lf_timestamp_field.to_string());
-            if (this->elf_level_field.empty()) {
-                this->elf_level_field_index = -1;
-            }
-            else {
-                elf->elf_level_field_index = pat->name_index(elf->elf_level_field.to_string());
-            }
-            if (this->elf_body_field.empty()) {
-                this->elf_body_field_index = -1;
-            }
-            else {
-                elf->elf_body_field_index = pat->name_index(elf->elf_body_field.to_string());
-            }
         }
 
         return retval;
@@ -744,7 +887,33 @@ public:
         return this->elf_source_path;
     };
 
+    bool has_value_def(const intern_string_t &ist) const {
+        return (ist == this->lf_timestamp_field ||
+                ist == this->elf_level_field ||
+                ist == this->elf_body_field ||
+                this->elf_value_defs.find(ist) != this->elf_value_defs.end());
+    }
+
+    std::string get_pattern_name() const {
+        if (this->jlf_json) {
+            return "json";
+        }
+        return this->elf_pattern_order[this->lf_fmt_lock]->p_config_path;
+    }
+
+    std::string get_pattern_regex() const {
+        if (this->jlf_json) {
+            return "";
+        }
+        return this->elf_pattern_order[this->lf_fmt_lock]->p_string;
+    }
+
+    typedef std::map<intern_string_t, module_format> mod_map_t;
+    static mod_map_t MODULE_FORMATS;
+    static std::vector<external_log_format *> GRAPH_ORDERED_FORMATS;
+
     std::set<std::string> elf_source_path;
+    std::list<intern_string_t> elf_collision;
     std::string elf_file_pattern;
     pcrepp *elf_filename_pcre;
     std::map<std::string, pattern> elf_patterns;
@@ -754,10 +923,14 @@ public:
     int elf_column_count;
     double elf_timestamp_divisor;
     intern_string_t elf_level_field;
-    int elf_level_field_index;
     intern_string_t elf_body_field;
-    int elf_body_field_index;
+    intern_string_t elf_module_id_field;
+    intern_string_t elf_opid_field;
     std::map<logline::level_t, level_pattern> elf_level_patterns;
+    bool elf_multiline;
+    bool elf_container;
+    bool elf_has_module_format;
+    bool elf_builtin_format;
 
     enum json_log_field {
         JLF_CONSTANT,
@@ -782,6 +955,7 @@ public:
     };
 
     bool jlf_json;
+    bool jlf_hide_extra;
     std::vector<json_format_element> jlf_line_format;
     std::vector<logline_value> jlf_line_values;
 
@@ -793,8 +967,21 @@ public:
     std::auto_ptr<yajlpp_parse_context> jlf_parse_context;
     auto_mem<yajl_handle_t> jlf_yajl_handle;
 private:
-    const std::string elf_name;
+    const intern_string_t elf_name;
 
+    static uint8_t module_scan(const pcre_input &pi,
+                               pcre_context::capture_t *body_cap,
+                               const intern_string_t &mod_name);
+};
+
+class module_format {
+
+public:
+    module_format() : mf_mod_format(NULL) {
+
+    };
+
+    external_log_format *mf_mod_format;
 };
 
 #endif

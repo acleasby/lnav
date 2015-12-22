@@ -102,7 +102,7 @@ private:
 
         snprintf(lockname, sizeof(lockname), "/tmp/lnav.%d.lck", getpid());
         this->lh_fd = open(lockname, O_CREAT | O_RDWR, 0600);
-        fcntl(this->lh_fd, F_SETFD, FD_CLOEXEC);
+        log_perror(fcntl(this->lh_fd, F_SETFD, FD_CLOEXEC));
         unlink(lockname);
     };
 
@@ -171,9 +171,13 @@ throw (error)
                 if (gz_id[0] == '\037' && gz_id[1] == '\213') {
                     int gzfd = dup(fd);
 
-                    fcntl(gzfd, F_SETFD, FD_CLOEXEC);
-                    lseek(fd, 0, SEEK_SET);
+                    log_perror(fcntl(gzfd, F_SETFD, FD_CLOEXEC));
+                    if (lseek(fd, 0, SEEK_SET) < 0) {
+                        close(gzfd);
+                        throw error(errno);
+                    }
                     if ((this->lb_gz_file = gzdopen(gzfd, "r")) == NULL) {
+                        close(gzfd);
                         if (errno == 0) {
                             throw bad_alloc();
                         }
@@ -190,7 +194,9 @@ throw (error)
                 }
 #ifdef HAVE_BZLIB_H
                 else if (gz_id[0] == 'B' && gz_id[1] == 'Z') {
-                    lseek(fd, 0, SEEK_SET);
+                    if (lseek(fd, 0, SEEK_SET) < 0) {
+                        throw error(errno);
+                    }
                     this->lb_bz_file = true;
 
                     /*
@@ -251,9 +257,10 @@ throw (error)
          * The request is outside the cached range, need to reload the
          * whole thing.
          */
+        this->lb_share_manager.invalidate_refs();
         prefill = 0;
         this->lb_buffer_size = 0;
-        if ((this->lb_file_size != (size_t)-1) &&
+        if ((this->lb_file_size != (ssize_t)-1) &&
             (start + this->lb_buffer_max > this->lb_file_size)) {
             /*
              * If the start is near the end of the file, move the offset back a
@@ -274,10 +281,10 @@ throw (error)
         prefill = start - this->lb_file_offset;
     }
     require(this->lb_file_offset <= start);
-    require(prefill <= this->lb_buffer_size);
+    require(prefill <= (size_t)this->lb_buffer_size);
 
     available = this->lb_buffer_max - (start - this->lb_file_offset);
-    require(available <= this->lb_buffer_max);
+    require(available <= (size_t)this->lb_buffer_max);
 
     if (max_length > available) {
         /*
@@ -319,7 +326,7 @@ throw (error)
 
         /* ... read in the new data. */
         if (this->lb_gz_file) {
-            if (this->lb_file_size != (size_t)-1 &&
+            if (this->lb_file_size != (ssize_t)-1 &&
                 this->in_range(start) &&
                 this->in_range(this->lb_file_size - 1)) {
                 rc = 0;
@@ -339,8 +346,8 @@ throw (error)
         }
 #ifdef HAVE_BZLIB_H
         else if (this->lb_bz_file) {
-            if (this->lb_file_size != (size_t)-1 &&
-                (((size_t)start >= this->lb_file_size) ||
+            if (this->lb_file_size != (ssize_t)-1 &&
+                (((ssize_t)start >= this->lb_file_size) ||
                  (this->in_range(start) &&
                   this->in_range(this->lb_file_size - 1)))) {
                 rc = 0;
@@ -350,13 +357,19 @@ throw (error)
                 char             scratch[32 * 1024];
                 BZFILE *         bz_file;
                 off_t            seek_to;
+                int              bzfd;
 
                 /*
                  * Unfortunately, there is no bzseek, so we need to reopen the
                  * file every time we want to do a read.
                  */
-                lseek(this->lb_fd, 0, SEEK_SET);
-                if ((bz_file = BZ2_bzdopen(dup(this->lb_fd), "r")) == NULL) {
+                bzfd = dup(this->lb_fd);
+                if (lseek(this->lb_fd, 0, SEEK_SET) < 0) {
+                    close(bzfd);
+                    throw error(errno);
+                }
+                if ((bz_file = BZ2_bzdopen(bzfd, "r")) == NULL) {
+                    close(bzfd);
                     if (errno == 0) {
                         throw bad_alloc();
                     }
@@ -487,7 +500,7 @@ throw (error)
             (request_size == MAX_LINE_BUFFER_SIZE) ||
             ((request_size > lv.lv_len) && lv.lv_len > 0)) {
             if ((lf != NULL) &&
-                ((lf - line_start) >= MAX_LINE_BUFFER_SIZE - 1)) {
+                ((size_t) (lf - line_start) >= MAX_LINE_BUFFER_SIZE - 1)) {
                 lf = NULL;
             }
             if (lf != NULL) {
@@ -505,6 +518,8 @@ throw (error)
             }
             else {
                 if (lv.lv_len >= MAX_LINE_BUFFER_SIZE) {
+                    log_warning("Line exceeded max size: offset=%d",
+                                offset);
                     lv.lv_len = MAX_LINE_BUFFER_SIZE - 1;
                     lv.lv_partial = false;
                 }
@@ -552,7 +567,7 @@ throw (error)
         }
     }
 
-    ensure(lv.lv_len <= this->lb_buffer_size);
+    ensure(lv.lv_len <= (size_t)this->lb_buffer_size);
     ensure(!retval ||
            (lv.lv_start >= this->lb_buffer &&
             (lv.lv_start + lv.lv_len) <= (this->lb_buffer + this->lb_buffer_size)));

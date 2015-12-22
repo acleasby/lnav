@@ -36,6 +36,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/ioctl.h>
@@ -61,8 +62,21 @@ typedef void (*readline_highlighter_t)(attr_line_t &line, int x);
  */
 class readline_context {
 public:
-    typedef std::string (*command_t)(std::string cmdline,
-                                     std::vector<std::string> &args);
+    typedef std::string (*command_func_t)(
+            std::string cmdline, std::vector<std::string> &args);
+    typedef struct {
+        const char *c_name;
+        const char *c_args;
+        const char *c_description;
+        command_func_t c_func;
+
+        void operator=(command_func_t func) {
+            this->c_name = "anon";
+            this->c_args = NULL;
+            this->c_description = NULL;
+            this->c_func = func;
+        }
+    } command_t;
     typedef std::map<std::string, command_t> command_map_t;
 
     readline_context(const std::string &name,
@@ -70,6 +84,7 @@ public:
                      bool case_sensitive = true)
         : rc_name(name),
           rc_case_sensitive(case_sensitive),
+          rc_quote_chars("\"'"),
           rc_highlighter(NULL)
     {
         char *home;
@@ -81,7 +96,7 @@ public:
                 std::string cmd = iter->first;
 
                 this->rc_possibilities["__command"].insert(cmd);
-                iter->second(cmd, this->rc_prototypes[cmd]);
+                iter->second.c_func(cmd, this->rc_prototypes[cmd]);
             }
         }
 
@@ -161,6 +176,12 @@ public:
         return *this;
     };
 
+    readline_context &set_quote_chars(const char *qc) {
+        this->rc_quote_chars = qc;
+
+        return *this;
+    };
+
     readline_highlighter_t get_highlighter() const {
         return this->rc_highlighter;
     };
@@ -178,6 +199,7 @@ private:
     std::map<std::string, std::vector<std::string> > rc_prototypes;
     bool rc_case_sensitive;
     int rc_append_character;
+    const char *rc_quote_chars;
     readline_highlighter_t rc_highlighter;
 };
 
@@ -214,11 +236,13 @@ public:
         this->rc_contexts[id] = &rc;
     };
 
+    void set_change_action(action va) { this->rc_change = va; };
     void set_perform_action(action va) { this->rc_perform = va; };
     void set_timeout_action(action va) { this->rc_timeout = va; };
     void set_abort_action(action va) { this->rc_abort = va; };
     void set_display_match_action(action va) { this->rc_display_match = va; };
     void set_display_next_action(action va) { this->rc_display_next = va; };
+    void set_blur_action(action va) { this->rc_blur = va; };
 
     void set_value(const std::string &value)
     {
@@ -227,26 +251,43 @@ public:
     };
     std::string get_value() const { return this->rc_value; };
 
+    std::string get_line_buffer() const {
+        return this->rc_line_buffer;
+    };
+
     void set_alt_value(const std::string &value)
     {
         this->rc_alt_value = value;
     };
     std::string get_alt_value() const { return this->rc_alt_value; };
 
-    int update_fd_set(fd_set &readfds)
+    void update_poll_set(std::vector<struct pollfd> &pollfds)
     {
-        FD_SET(this->rc_pty[RCF_MASTER], &readfds);
-        FD_SET(this->rc_command_pipe[RCF_MASTER], &readfds);
-
-        return std::max(this->rc_pty[RCF_MASTER].get(),
-                        this->rc_command_pipe[RCF_MASTER].get());
+        pollfds.push_back((struct pollfd) {
+                this->rc_pty[RCF_MASTER],
+                POLLIN,
+                0
+        });
+        pollfds.push_back((struct pollfd) {
+                this->rc_command_pipe[RCF_MASTER],
+                POLLIN,
+                0
+        });
     };
 
     void handle_key(int ch);
 
-    void check_fd_set(fd_set &ready_rfds);
+    void check_poll_set(const std::vector<struct pollfd> &pollfds);
 
     void focus(int context, const char *prompt);
+
+    readline_context *get_active_context() const {
+        require(this->rc_active_context != -1);
+
+        std::map<int, readline_context *>::const_iterator iter;
+        iter = this->rc_contexts.find(this->rc_active_context);
+        return iter->second;
+    };
 
     void abort();
 
@@ -281,6 +322,17 @@ public:
         }
     };
 
+    void add_possibility(int context,
+                         const std::string &type,
+                         const std::vector<std::string> &values)
+    {
+        for (std::vector<std::string>::const_iterator iter = values.begin();
+             iter != values.end();
+             ++iter) {
+            this->add_possibility(context, type, *iter);
+        }
+    };
+
     void rem_possibility(int context,
                          const std::string &type,
                          const std::string &value);
@@ -312,16 +364,19 @@ private:
     auto_fd rc_command_pipe[2];
     std::map<int, readline_context *> rc_contexts;
     std::string rc_value;
+    std::string rc_line_buffer;
     time_t      rc_value_expiration;
     std::string rc_alt_value;
     int rc_matches_remaining;
     int rc_max_match_length;
     std::vector<std::string> rc_matches;
 
+    action rc_change;
     action rc_perform;
     action rc_timeout;
     action rc_abort;
     action rc_display_match;
     action rc_display_next;
+    action rc_blur;
 };
 #endif

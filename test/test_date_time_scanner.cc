@@ -37,15 +37,9 @@
 
 static const char *BAD_TIMES[] = {
     "1-2-3 1:2:3",
-    "2013-2-3 1:2:3",
-    "2013-02-3 1:2:3",
-    "2013-02-03 1:2:3",
-    "2013-02-03 01:2:3",
 
     "2013-22-01 12:01:22",
     "2013-00-01 12:01:22",
-    "2013-12-32 12:01:22",
-    "2013-12-00 12:01:22",
 
     NULL
 };
@@ -57,6 +51,7 @@ int main(int argc, char *argv[])
         struct timeval tv;
         struct exttm tm;
 
+        printf("Checking bad time: %s\n", BAD_TIMES[lpc]);
         assert(dts.scan(BAD_TIMES[lpc], strlen(BAD_TIMES[lpc]), NULL, &tm, tv) == NULL);
     }
 
@@ -72,5 +67,15 @@ int main(int argc, char *argv[])
             dts.clear();
             assert(dts.scan(es_date, strlen(es_date), NULL, &es_tm, es_tv) != NULL);
         }
+    }
+
+    {
+        const char *epoch_str = "ts 1428721664 ]";
+        struct exttm tm;
+        off_t off = 0;
+
+        bool rc = ptime_fmt("ts %s ]", &tm, epoch_str, off, strlen(epoch_str));
+        assert(rc);
+        assert(tm2sec(&tm.et_tm) == 1428721664);
     }
 }

@@ -149,7 +149,7 @@ public:
     };
 
 private:
-    alerter() : a_enabled(false), a_do_flash(true), a_last_input(-1) { };
+    alerter() : a_enabled(true), a_do_flash(true), a_last_input(-1) { };
 
     bool a_enabled;
     bool a_do_flash;
@@ -164,6 +164,10 @@ struct line_range {
     int lr_end;
 
     line_range(int start = -1, int end = -1) : lr_start(start), lr_end(end) { };
+
+    bool is_valid() const {
+        return this->lr_start != -1;
+    }
 
     int length() const
     {
@@ -182,6 +186,12 @@ struct line_range {
         return this->contains(other.lr_start) || this->contains(other.lr_end);
     };
 
+    void ltrim(const char *str) {
+        while (this->lr_start < this->lr_end && isspace(str[this->lr_start])) {
+            this->lr_start += 1;
+        }
+    };
+
     bool operator<(const struct line_range &rhs) const
     {
         if (this->lr_start < rhs.lr_start) { return true; }
@@ -196,6 +206,23 @@ struct line_range {
     bool operator==(const struct line_range &rhs) const {
         return (this->lr_start == rhs.lr_start && this->lr_end == rhs.lr_end);
     };
+
+    const char *substr(const std::string &str) const {
+        if (this->lr_start == -1) {
+            return str.c_str();
+        }
+        return &(str.c_str()[this->lr_start]);
+    }
+
+    size_t sublen(const std::string &str) const {
+        if (this->lr_start == -1) {
+            return str.length();
+        }
+        if (this->lr_end == -1) {
+            return str.length() - this->lr_start;
+        }
+        return this->length();
+    }
 };
 
 /**
@@ -239,7 +266,6 @@ inline string_attrs_t::const_iterator
 find_string_attr(const string_attrs_t &sa, string_attr_type_t type)
 {
     string_attrs_t::const_iterator iter;
-    struct line_range retval;
 
     for (iter = sa.begin(); iter != sa.end(); ++iter) {
         if (iter->sa_type == type) {
@@ -613,7 +639,12 @@ struct mouse_event {
     mouse_event(mouse_button_t button = BUTTON_LEFT,
                 mouse_button_state_t state = BUTTON_STATE_PRESSED,
                 int x = -1,
-                int y = -1) : me_button(button), me_state(state), me_x(x), me_y(y) {
+                int y = -1)
+            : me_button(button),
+              me_state(state),
+              me_x(x),
+              me_y(y) {
+        memset(&this->me_time, 0, sizeof(this->me_time));
     };
 
     mouse_button_t me_button;

@@ -27,9 +27,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * @file log_data_table.hh
- *
- * XXX This file has become a dumping ground for code and needs to be broken up
- * a bit.
  */
 
 #ifndef _log_data_table_hh
@@ -47,14 +44,15 @@
 class log_data_table : public log_vtab_impl {
 public:
 
-    log_data_table(content_line_t template_line,
-                   std::string table_name = "logline")
+    log_data_table(content_line_t template_line, intern_string_t table_name)
         : log_vtab_impl(table_name),
           ldt_template_line(template_line),
-          ldt_parent_column_count(0) {
+          ldt_parent_column_count(0),
+          ldt_instance(-1) {
         logfile *lf = lnav_data.ld_log_source.find(template_line);
         log_format *format = lf->get_format();
 
+        this->vi_supports_indexes = false;
         this->ldt_format_impl = lnav_data.ld_vtab_manager->lookup_impl(format->get_name());
     };
 
@@ -86,6 +84,7 @@ public:
 
         dp.parse();
 
+        cols.push_back(vtab_column("log_msg_instance", SQLITE_INTEGER, NULL));
         for (data_parser::element_list_t::iterator pair_iter =
                  dp.dp_pairs.begin();
              pair_iter != dp.dp_pairs.end();
@@ -118,8 +117,18 @@ public:
         this->ldt_schema_id = dp.dp_schema_id;
     };
 
+    void get_foreign_keys(std::vector<std::string> &keys_inout)
+    {
+        log_vtab_impl::get_foreign_keys(keys_inout);
+        keys_inout.push_back("log_msg_instance");
+    };
+
     bool next(log_cursor &lc, logfile_sub_source &lss)
     {
+        if (lc.lc_curr_line == vis_line_t(-1)) {
+            this->ldt_instance = -1;
+        }
+
         lc.lc_curr_line = lc.lc_curr_line + vis_line_t(1);
         lc.lc_sub_index = 0;
 
@@ -167,6 +176,7 @@ public:
 
         this->ldt_pairs.clear();
         this->ldt_pairs.swap(dp.dp_pairs);
+        this->ldt_instance += 1;
 
         return true;
     };
@@ -175,9 +185,13 @@ public:
                  shared_buffer_ref &line,
                  std::vector<logline_value> &values)
     {
+        static intern_string_t instance_name = intern_string::lookup("log_msg_instance");
+
         int next_column = this->ldt_parent_column_count;
 
         this->ldt_format_impl->extract(lf, line, values);
+        values.push_back(logline_value(instance_name, this->ldt_instance));
+        values.back().lv_column = next_column++;
         for (data_parser::element_list_t::iterator pair_iter =
                  this->ldt_pairs.begin();
              pair_iter != this->ldt_pairs.end();
@@ -187,13 +201,15 @@ public:
             switch (pvalue.value_token()) {
             case DT_NUMBER: {
                 char scan_value[line.length() + 1];
-                double d = 0;
+                double d = 0.0;
 
                 memcpy(scan_value,
                     line.get_data() + pvalue.e_capture.c_begin,
                     pvalue.e_capture.length());
                 scan_value[line.length()] = '\0';
-                sscanf(scan_value, "%lf", &d);
+                if (sscanf(scan_value, "%lf", &d) != 1) {
+                    d = 0.0;
+                }
                 values.push_back(logline_value(intern_string::lookup("", 0), d));
             }
             break;
@@ -220,5 +236,6 @@ private:
     data_parser::element_list_t ldt_pairs;
     log_vtab_impl *ldt_format_impl;
     int ldt_parent_column_count;
+    int64_t ldt_instance;
 };
 #endif

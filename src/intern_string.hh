@@ -56,6 +56,17 @@ public:
         return std::string(this->is_str, this->is_len);
     }
 
+    bool startswith(const char *prefix) const {
+        const char *curr = this->is_str;
+
+        while (*prefix != '\0' && *prefix == *curr) {
+            prefix += 1;
+            curr += 1;
+        }
+
+        return *prefix == '\0';
+    }
+
 private:
     intern_string(const char *str, ssize_t len)
             : is_next(NULL), is_str(str), is_len(len) {
@@ -73,19 +84,32 @@ public:
 
     }
 
+    const intern_string *unwrap() const {
+        return this->ist_interned_string;
+    }
+
     bool empty(void) const {
         return this->ist_interned_string == NULL;
     }
 
     const char *get(void) const {
+        if (this->empty()) {
+            return "";
+        }
         return this->ist_interned_string->get();
     }
 
     size_t size(void) const {
+        if (this->ist_interned_string == NULL) {
+            return 0;
+        }
         return this->ist_interned_string->size();
     }
 
     std::string to_string(void) const {
+        if (this->ist_interned_string == NULL) {
+            return "";
+        }
         return this->ist_interned_string->to_string();
     }
 
@@ -97,6 +121,14 @@ public:
         return this->ist_interned_string == rhs.ist_interned_string;
     }
 
+    bool operator!=(const intern_string_t &rhs) const {
+        return !(*this == rhs);
+    }
+
+    bool operator==(const char *rhs) const {
+        return strcmp(this->get(), rhs) == 0;
+    }
+
     void operator=(const intern_string_t &rhs) {
         this->ist_interned_string = rhs.ist_interned_string;
     }
@@ -104,5 +136,7 @@ public:
 private:
     const intern_string *ist_interned_string;
 };
+
+unsigned long hash_str(const char *str, size_t len);
 
 #endif

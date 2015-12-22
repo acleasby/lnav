@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.org/tstack/lnav.png)](https://travis-ci.org/tstack/lnav)
+[![Bounties](https://img.shields.io/bountysource/team/lnav/activity.svg)](https://www.bountysource.com/teams/lnav)
 
 _This is the source repository for **lnav**, visit [http://lnav.org](http://lnav.org) for a high level overview._
 
@@ -37,6 +38,8 @@ Lnav follows the usual GNU style for configuring and installing software:
     $ make
     $ sudo make install
 
+__Run ```./autogen.sh``` before running any of the above commands when
+compiling from a cloned repository.__
 
 Using
 -----

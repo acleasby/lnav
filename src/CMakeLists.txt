@@ -3,12 +3,16 @@ set(diag_STAT_SRCS
     ansi_scrubber.cc
     bookmarks.cc
     collation-functions.cc
+    command_executor.cc
+    curl_looper.cc
     db_sub_source.cc
     environ_vtab.cc
     extension-functions.c
+    field_overlay_source.cc
     fs-extension-functions.cc
     grep_proc.cc
     hist_source.cc
+    hotkeys.cc
     intern_string.cc
     json-extension-functions.cc
     json_op.cc
@@ -27,12 +31,18 @@ set(diag_STAT_SRCS
     network-extension-functions.cc
     data_scanner.cc
     data_parser.cc
+    papertrail_proc.cc
     ptimec_rt.cc
+    pretty_printer.cc
+    readline_callbacks.cc
     readline_curses.cc
     readline_highlighters.cc
+    readline_possibilities.cc
+    relative_time.cc
     session_data.cc
     sequence_matcher.cc
     shared_buffer.cc
+    shlex.cc
     sqlite-extension-func.c
     statusview_curses.cc
     string-extension-functions.cc
@@ -43,7 +53,9 @@ set(diag_STAT_SRCS
     state-extension-functions.cc
     strnatcmp.c
     textview_curses.cc
+    timer.cc
     view_curses.cc
+    views_vtab.cc
     vt52_curses.cc
     log_vtab_impl.cc
     xterm_mouse.cc
@@ -65,29 +77,42 @@ set(diag_STAT_SRCS
     yajl/yajl_version.c
     spookyhash/SpookyV2.cpp
 
+    all_logs_vtab.hh
     auto_fd.hh
     auto_mem.hh
     auto_pid.hh
     bottom_status_source.hh
     byte_array.hh
     chunky_index.hh
+    command_executor.hh
     concise_index.hh
     column_namer.hh
+    curl_looper.hh
+    field_overlay_source.hh
     filter_observer.hh
     format-text-files.hh
     grapher.hh
     grep_highlighter.hh
     help.hh
+    hotkeys.hh
     init-sql.hh
     intern_string.hh
     k_merge_tree.h
     log_data_helper.hh
     log_data_table.hh
     log_format_impls.cc
+    log_search_table.hh
     logfile_stats.hh
+    papertrail_proc.hh
+    plain_text_source.hh
     pretty_printer.hh
     ptimec.hh
+    pthreadpp.hh
+    readline_callbacks.hh
+    readline_possibilities.hh
+    relative_time.hh
     sequence_sink.hh
+    shlex.hh
     status_controllers.hh
     strong_int.hh
     sysclip.hh
@@ -95,7 +120,10 @@ set(diag_STAT_SRCS
     termios_guard.hh
     textfile_sub_source.hh
     time_T.hh
+    timer.hh
     top_status_source.hh
+    url_loader.hh
+    views_vtab.hh
 
     yajl/api/yajl_common.h
     yajl/api/yajl_gen.h

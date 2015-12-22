@@ -2,7 +2,7 @@
     "test_log" : {
         "title" : "Test JSON Log",
         "json" : true,
-        "file-pattern" : ".*\\.json.*",
+        "file-pattern" : "logfile_json\\.json",
         "description" : "Test config",
         "line-format" : [
             { "field" : "ts" },

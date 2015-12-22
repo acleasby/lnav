@@ -36,6 +36,8 @@
 
 #include <math.h>
 #include <time.h>
+#include <sys/time.h>
+#include <poll.h>
 #include <sys/types.h>
 
 #include "spookyhash/SpookyV2.h"
@@ -66,7 +68,8 @@ size_t unquote(char *dst, const char *str, size_t len);
  * @param
  * @param step The granularity.
  */
-inline int rounddown(size_t size, int step)
+template<typename Size, typename Step>
+inline int rounddown(Size size, Step step)
 {
     return size - (size % step);
 }
@@ -106,6 +109,16 @@ inline time_t hour_num(time_t ti)
 
 std::string time_ago(time_t last_time);
 
+typedef int64_t mstime_t;
+
+inline mstime_t getmstime() {
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+
+    return tv.tv_sec * 1000ULL + tv.tv_usec / 1000ULL;
+}
+
 #if SIZEOF_OFF_T == 8
 #define FORMAT_OFF_T    "%qd"
 #elif SIZEOF_OFF_T == 4
@@ -126,6 +139,8 @@ struct hash_updater {
 };
 
 std::string hash_string(const std::string &str);
+
+std::string hash_bytes(const char *str1, size_t s1len, ...);
 
 template<typename UnaryFunction, typename Member>
 struct object_field_t {
@@ -156,6 +171,13 @@ std::string get_current_dir(void);
 
 bool change_to_parent_dir(void);
 
+std::pair<std::string, std::string> split_path(const char *path, ssize_t len);
+
+inline
+std::pair<std::string, std::string> split_path(const std::string &path) {
+    return split_path(path.c_str(), path.size());
+};
+
 enum file_format_t {
     FF_UNKNOWN,
     FF_SQLITE_DB,
@@ -163,7 +185,7 @@ enum file_format_t {
 
 file_format_t detect_file_format(const std::string &filename);
 
-bool next_format(const char *fmt[], int &index, int &locked_index);
+bool next_format(const char * const fmt[], int &index, int &locked_index);
 
 inline bool is_glob(const char *fn)
 {
@@ -172,7 +194,32 @@ inline bool is_glob(const char *fn)
             strchr(fn, '[') != NULL);
 };
 
+bool is_url(const char *fn);
+
+inline bool startswith(const char *str, const char *prefix)
+{
+    return strncmp(str, prefix, strlen(prefix)) == 0;
+}
+
+inline bool startswith(std::string str, const char *prefix)
+{
+    return startswith(str.c_str(), prefix);
+}
+
+inline bool endswith(const char *str, const char *suffix)
+{
+    size_t len = strlen(str), suffix_len = strlen(suffix);
+
+    if (suffix_len > len) {
+        return false;
+    }
+
+    return strcmp(&str[len - suffix_len], suffix) == 0;
+}
+
 std::string build_path(const std::vector<std::string> &paths);
+
+bool read_file(const char *filename, std::string &out);
 
 /**
  * Convert the time stored in a 'tm' struct into epoch time.
@@ -187,7 +234,9 @@ struct tm *secs2tm(time_t *tim_p, struct tm *res);
 extern const char *std_time_fmt[];
 
 struct date_time_scanner {
-    date_time_scanner() : dts_local_time(false),
+    date_time_scanner() : dts_keep_base_tz(false),
+                          dts_local_time(false),
+                          dts_local_offset_cache(0),
                           dts_local_offset_valid(0),
                           dts_local_offset_expiry(0) {
         this->clear();
@@ -236,6 +285,7 @@ struct date_time_scanner {
         }
     };
 
+    bool dts_keep_base_tz;
     bool dts_local_time;
     time_t dts_base_time;
     struct exttm dts_base_tm;
@@ -249,12 +299,37 @@ struct date_time_scanner {
 
     const char *scan(const char *time_src,
                      size_t time_len,
-                     const char *time_fmt[],
+                     const char * const time_fmt[],
                      struct exttm *tm_out,
                      struct timeval &tv_out);
+
+    bool convert_to_timeval(const std::string &time_src,
+                            struct timeval &tv_out) {
+        struct exttm tm;
+
+        if (this->scan(time_src.c_str(), time_src.size(),
+                       NULL, &tm, tv_out) != NULL) {
+            return true;
+        }
+        return false;
+    }
 };
 
 template<typename T>
 size_t strtonum(T &num_out, const char *data, size_t len);
+
+inline bool pollfd_ready(const std::vector<struct pollfd> &pollfds, int fd, short events = POLLIN|POLLHUP) {
+    for (std::vector<struct pollfd>::const_iterator iter = pollfds.begin();
+            iter != pollfds.end();
+            ++iter) {
+        if (iter->fd == fd && iter->revents & events) {
+            return true;
+        }
+    }
+
+    return false;
+};
+
+bool wordexperr(int rc, std::string &msg);
 
 #endif

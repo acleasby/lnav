@@ -55,18 +55,21 @@ int main(int argc, char *argv[])
     int c, rnd_iters = 5, retval = EXIT_SUCCESS;
     vector<pair<int, int> > index;
     auto_fd fd = STDIN_FILENO;
-    off_t offset = 0;
+	int offseti = 0;
+	off_t offset = 0;
     struct stat st;
     
     while ((c = getopt(argc, argv, "o:i:n:")) != -1) {
 	switch (c) {
 	case 'o':
-	    if (sscanf(optarg, FORMAT_OFF_T, &offset) != 1) {
+	    if (sscanf(optarg, "%d", &offseti) != 1) {
 		fprintf(stderr,
 			"error: offset is not an integer -- %s\n",
 			optarg);
 		retval = EXIT_FAILURE;
-	    }
+	    } else {
+			offset = offseti;
+		}
 	    break;
 	case 'n':
 	    if (sscanf(optarg, "%d", &rnd_iters) != 1) {
@@ -132,7 +135,7 @@ int main(int argc, char *argv[])
 		while (lb.read_line(offset, lv)) {
             lv.terminate();
 		    printf("%s", lv.lv_start);
-		    if ((last_offset + lv.lv_len) < offset)
+		    if ((off_t)(last_offset + lv.lv_len) < offset)
 			printf("\n");
 		    last_offset = offset;
 		}
@@ -152,7 +155,7 @@ int main(int argc, char *argv[])
                 while (lb.read_line(seq_offset, lv)) { }
 		do {
             bool ret;
-		    int lpc;
+		    size_t lpc;
 
 		    random_shuffle(index.begin(), index.end());
 		    for (lpc = 0; lpc < index.size(); lpc++) {

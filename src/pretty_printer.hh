@@ -30,17 +30,27 @@
 #ifndef __pretty_printer_hh
 #define __pretty_printer_hh
 
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
+#include <signal.h>
 
 #include <stack>
 #include <deque>
 #include <sstream>
+#include <iomanip>
 
+#include "timer.hh"
 #include "ansi_scrubber.hh"
 #include "data_scanner.hh"
+#include "lnav_util.hh"
+
+extern sig_atomic_t reverse_lookup_enabled;
+
+void sigalrm_handler(int sig);
 
 class pretty_printer {
 
@@ -56,8 +66,11 @@ public:
         pcre_context::capture_t e_capture;
     };
 
-    pretty_printer(data_scanner *ds)
-            : pp_depth(0), pp_line_length(0), pp_scanner(ds) {
+    pretty_printer(data_scanner *ds, int leading_indent=0)
+            : pp_leading_indent(leading_indent),
+              pp_depth(0),
+              pp_line_length(0),
+              pp_scanner(ds) {
         this->pp_body_lines.push(0);
     };
 
@@ -65,7 +78,7 @@ public:
         pcre_context_static<30> pc;
         data_token_t dt;
 
-        while (this->pp_scanner->tokenize(pc, dt)) {
+        while (this->pp_scanner->tokenize2(pc, dt)) {
             element el(dt, pc);
 
             switch (dt) {
@@ -87,12 +100,14 @@ public:
                     continue;
                 case DT_LCURLY:
                 case DT_LSQUARE:
+                case DT_LPAREN:
                     this->flush_values(true);
                     this->pp_values.push_back(el);
                     this->descend();
                     continue;
                 case DT_RCURLY:
                 case DT_RSQUARE:
+                case DT_RPAREN:
                     this->flush_values();
                     if (this->pp_body_lines.top()) {
                         this->start_new_line();
@@ -101,17 +116,28 @@ public:
                     this->write_element(el);
                     continue;
                 case DT_COMMA:
-                    this->flush_values(true);
-                    this->write_element(el);
-                    this->start_new_line();
-                    continue;
+                    if (this->pp_depth > 0) {
+                        this->flush_values(true);
+                        this->write_element(el);
+                        this->start_new_line();
+                        continue;
+                    }
+                    break;
+                case DT_WHITE:
+                    if (this->pp_values.empty() && this->pp_depth == 0) {
+                        this->pp_leading_indent = el.e_capture.length();
+                        continue;
+                    }
+                    break;
                 default:
                     break;
             }
             this->pp_values.push_back(el);
         }
+        while (this->pp_depth > 0) {
+            this->ascend();
+        }
         this->flush_values();
-        this->pp_stream << std::ends;
 
         return this->pp_stream.str();
     };
@@ -144,14 +170,26 @@ private:
                 require(0);
                 break;
         }
-        if (rc == 1) {
-            while ((rc = getnameinfo((struct sockaddr *)&sa, socklen,
-                    buffer, sizeof(buffer), NULL, 0,
-                    NI_NAMEREQD)) == EAI_AGAIN) {
-                usleep(1000);
+        if (rc == 1 && reverse_lookup_enabled) {
+            const struct timeval timeout = {0, 500 * 1000};
+
+            {
+                timer::interrupt_timer t(timeout, sigalrm_handler);
+                if (t.arm_timer() == 0) {
+                    rc = getnameinfo((struct sockaddr *)&sa, socklen,
+                            buffer, sizeof(buffer), NULL, 0,
+                            NI_NAMEREQD);
+                    if (rc == 0) {
+                        result = buffer;
+                    }
+                }
+                else {
+                    log_error("Unable to set timer, disabling reverse lookup");
+                    reverse_lookup_enabled = 0;
+                }
             }
-            if (rc == 0) {
-                result = buffer;
+            if (!reverse_lookup_enabled) {
+                log_info("Reverse lookup in pretty-print view disabled");
             }
         }
         this->pp_stream << " " << ANSI_UNDERLINE_START <<
@@ -165,10 +203,15 @@ private:
     }
 
     void ascend() {
-        int lines = this->pp_body_lines.top();
-        this->pp_depth -= 1;
-        this->pp_body_lines.pop();
-        this->pp_body_lines.top() += lines;
+        if (this->pp_depth > 0) {
+            int lines = this->pp_body_lines.top();
+            this->pp_depth -= 1;
+            this->pp_body_lines.pop();
+            this->pp_body_lines.top() += lines;
+        }
+        else {
+            this->pp_body_lines.top() = 0;
+        }
     }
 
     void start_new_line() {
@@ -176,9 +219,10 @@ private:
 
         if (this->pp_line_length > 0) {
             this->pp_stream << std::endl;
+            this->pp_line_length = 0;
         }
         has_output = this->flush_values();
-        if (has_output) {
+        if (has_output && this->pp_line_length > 0) {
             this->pp_stream << std::endl;
         }
         this->pp_line_length = 0;
@@ -195,7 +239,9 @@ private:
                 if (start_on_depth &&
                         (el.e_token == DT_LSQUARE ||
                          el.e_token == DT_LCURLY)) {
-                    this->pp_stream << std::endl;
+                    if (this->pp_line_length > 0) {
+                        this->pp_stream << std::endl;
+                    }
                     this->pp_line_length = 0;
                 }
             }
@@ -206,28 +252,49 @@ private:
     }
 
     void append_indent() {
+        this->pp_stream << std::string(this->pp_leading_indent, ' ');
+        if (this->pp_stream.tellp() == this->pp_leading_indent) {
+            return;
+        }
         for (int lpc = 0; lpc < this->pp_depth; lpc++) {
             this->pp_stream << "    ";
         }
     }
 
     void write_element(const element &el) {
-        if (this->pp_line_length == 0 &&
-                (el.e_token == DT_WHITE || el.e_token == DT_LINE)) {
+        if (this->pp_line_length == 0 && el.e_token == DT_WHITE) {
+            return;
+        }
+        if (this->pp_line_length == 0 && el.e_token == DT_LINE) {
             return;
         }
         pcre_input &pi = this->pp_scanner->get_input();
         if (this->pp_line_length == 0) {
             this->append_indent();
         }
-        this->pp_stream << pi.get_substr(&el.e_capture);
-        switch (el.e_token) {
-            case DT_IPV4_ADDRESS:
-            case DT_IPV6_ADDRESS:
-                this->convert_ip_address(el);
-                break;
-            default:
-                break;
+        if (el.e_token == DT_QUOTED_STRING) {
+            pcre_input &pi = this->pp_scanner->get_input();
+            auto_mem<char> unquoted_str((char *)malloc(pi.pi_length));
+            const char *start = pi.get_substr_start(&el.e_capture);
+            unquote(unquoted_str.in(), start, el.e_capture.length());
+            data_scanner ds(unquoted_str.in());
+            pretty_printer str_pp(&ds, this->pp_leading_indent);
+            std::string result = str_pp.print();
+            if (result.find('\n') != std::string::npos) {
+                this->pp_stream << str_pp.print();
+            } else {
+                this->pp_stream << pi.get_substr(&el.e_capture);
+            }
+        } else {
+            this->pp_stream << pi.get_substr(&el.e_capture);
+            switch (el.e_token) {
+                case DT_IPV4_ADDRESS:
+                case DT_IPV6_ADDRESS:
+                    this->convert_ip_address(el);
+                    break;
+                default:
+                    break;
+            }
         }
         this->pp_line_length += el.e_capture.length();
         if (el.e_token == DT_LINE) {
@@ -236,6 +303,7 @@ private:
         }
     }
 
+    int pp_leading_indent;
     int pp_depth;
     int pp_line_length;
     std::stack<int> pp_body_lines;

@@ -213,7 +213,7 @@ static char *hex2bits(const char *src)
     len = strlen(src) / 2;
     retval = new char[sizeof(uint32_t) + len];
     *((uint32_t *)retval) = len;
-    while (pos < (sizeof(uint32_t) + len)) {
+    while ((size_t)pos < (sizeof(uint32_t) + len)) {
 	int val;
 	
 	sscanf(src, "%2x", &val);
@@ -578,9 +578,9 @@ int main(int argc, char *argv[])
 			    break;
 			case CT_WRITE:
 			    len = *((int *)cmd.c_arg.b);
-			    write(ct.get_fd(),
+			    log_perror(write(ct.get_fd(),
 				  cmd.c_arg.b + sizeof(int),
-				  len);
+				  len));
 			    delete [] cmd.c_arg.b;
 			    break;
 			}
@@ -618,12 +618,12 @@ int main(int argc, char *argv[])
 				}
 			}
 			else {
-			    write(ct.get_fd(), buffer, rc);
+			    log_perror(write(ct.get_fd(), buffer, rc));
 			    if (scripty_data.sd_to_child != NULL) {
 				fprintf(scripty_data.sd_to_child,
-					"sleep %ld.%06d\n"
+					"sleep %ld.%06ld\n"
 					"write ",
-					diff.tv_sec, diff.tv_usec);
+					(long)diff.tv_sec, (long)diff.tv_usec);
 				dump_memory(scripty_data.sd_to_child,
 					    buffer,
 					    rc);
@@ -662,7 +662,7 @@ int main(int argc, char *argv[])
 			}
 			else {
 			    if (passout)
-				write(STDOUT_FILENO, buffer, rc);
+				log_perror(write(STDOUT_FILENO, buffer, rc));
 			    if (scripty_data.sd_from_child != NULL) {
 				fprintf(stderr, "got out %d\n", rc);
 				memcpy(&out_buffer[out_len],

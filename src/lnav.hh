@@ -59,6 +59,9 @@
 #include "piper_proc.hh"
 #include "term_extra.hh"
 #include "ansi_scrubber.hh"
+#include "curl_looper.hh"
+#include "papertrail_proc.hh"
+#include "relative_time.hh"
 
 /** The command modes that are available while viewing a file. */
 typedef enum {
@@ -67,6 +70,7 @@ typedef enum {
     LNM_SEARCH,
     LNM_CAPTURE,
     LNM_SQL,
+    LNM_EXEC,
 } ln_mode_t;
 
 enum {
@@ -80,6 +84,7 @@ enum {
     LNB_ROTATED,
     LNB_CHECK_CONFIG,
     LNB_INSTALL,
+    LNB_UPDATE_FORMATS,
 };
 
 /** Flags set on the lnav command-line. */
@@ -94,6 +99,7 @@ typedef enum {
     LNF_QUIET     = (1L << LNB_QUIET),
     LNF_CHECK_CONFIG = (1L << LNB_CHECK_CONFIG),
     LNF_INSTALL   = (1L << LNB_INSTALL),
+    LNF_UPDATE_FORMATS = (1L << LNB_UPDATE_FORMATS),
 
     LNF__ALL      = (LNF_SYSLOG|LNF_HELP)
 } lnav_flags_t;
@@ -115,6 +121,8 @@ typedef enum {
 
 extern const char *lnav_view_strings[LNV__MAX + 1];
 
+extern const char *lnav_zoom_strings[];
+
 /** The status bars. */
 typedef enum {
     LNS_TOP,
@@ -135,6 +143,33 @@ void sqlite_close_wrapper(void *mem);
 typedef std::pair<int, int>                      ppid_time_pair_t;
 typedef std::pair<ppid_time_pair_t, std::string> session_pair_t;
 
+class input_state_tracker : public log_state_dumper {
+public:
+    input_state_tracker() : ist_index(0) {
+        memset(this->ist_recent_key_presses, 0, sizeof(this->ist_recent_key_presses));
+    };
+
+    void log_state() {
+        log_info("recent_key_presses: index=%d", this->ist_index);
+        for (int lpc = 0; lpc < COUNT; lpc++) {
+            log_msg_extra(" 0x%x (%c)", this->ist_recent_key_presses[lpc],
+                    this->ist_recent_key_presses[lpc]);
+        }
+        log_msg_extra_complete();
+    };
+
+    void push_back(int ch) {
+        this->ist_recent_key_presses[this->ist_index % COUNT] = ch;
+        this->ist_index = (this->ist_index + 1) % COUNT;
+    };
+
+private:
+    static const int COUNT = 10;
+
+    int ist_recent_key_presses[COUNT];
+    size_t ist_index;
+};
+
 struct _lnav_data {
     std::string                             ld_session_id;
     time_t                                  ld_session_time;
@@ -146,12 +181,16 @@ struct _lnav_data {
     const char *                            ld_debug_log_name;
 
     std::list<std::string>                  ld_commands;
+    bool                                    ld_cmd_init_done;
     std::vector<std::string>                ld_config_paths;
     std::set<std::pair<std::string, int> >  ld_file_names;
     std::list<logfile *>                    ld_files;
     std::list<std::string>                  ld_other_files;
     std::set<std::string>                   ld_closed_files;
     std::list<std::pair<std::string, int> > ld_files_to_front;
+    std::string                             ld_pt_search;
+    time_t                                  ld_pt_min_time;
+    time_t                                  ld_pt_max_time;
     bool                                    ld_stdout_used;
     sig_atomic_t                            ld_looping;
     sig_atomic_t                            ld_winched;
@@ -180,6 +219,7 @@ struct _lnav_data {
 
     logfile_sub_source                      ld_log_source;
     hist_source                             ld_hist_source;
+    hist_source2                            ld_hist_source2;
     int                                     ld_hist_zoom;
 
     textfile_sub_source                     ld_text_source;
@@ -189,13 +229,9 @@ struct _lnav_data {
 
     grapher                                 ld_graph_source;
 
-    hist_source                             ld_db_source;
-    db_label_source                         ld_db_rows;
+    db_label_source                         ld_db_row_source;
     db_overlay_source                       ld_db_overlay;
     std::vector<std::string>                ld_db_key_names;
-
-    int                                     ld_max_fd;
-    fd_set                                  ld_read_fds;
 
     std::auto_ptr<grep_highlighter>         ld_grep_child[LG__MAX];
     std::string                             ld_previous_search;
@@ -210,9 +246,22 @@ struct _lnav_data {
     std::list<piper_proc *>                 ld_pipers;
     xterm_mouse ld_mouse;
     term_extra ld_term_extra;
+
+    input_state_tracker ld_input_state;
+
+    curl_looper ld_curl_looper;
+
+    relative_time ld_last_relative_time;
+
+    std::stack<std::map<std::string, std::string> > ld_local_vars;
+    std::stack<std::string> ld_path_stack;
 };
 
 extern struct _lnav_data lnav_data;
+
+extern readline_context::command_map_t lnav_commands;
+extern bookmark_type_t BM_QUERY;
+extern const int HIST_ZOOM_LEVELS;
 
 #define HELP_MSG_1(x, msg) \
     "Press '" ANSI_BOLD(#x) "' " msg
@@ -220,20 +269,24 @@ extern struct _lnav_data lnav_data;
 #define HELP_MSG_2(x, y, msg) \
     "Press " ANSI_BOLD(#x) "/" ANSI_BOLD(#y) " " msg
 
+void rebuild_hist(size_t old_count, bool force);
 void rebuild_indexes(bool force);
 
 bool ensure_view(textview_curses *expected_tc);
 bool toggle_view(textview_curses *toggle_tc);
 
-std::string execute_command(std::string cmdline);
-
 bool setup_logline_table();
-int sql_callback(sqlite3_stmt *stmt);
 
 void execute_search(lnav_view_t view, const std::string &regex);
 
 void redo_search(lnav_view_t view_index);
 
+bool rescan_files(bool required = false);
+
+vis_line_t next_cluster(
+        vis_line_t(bookmark_vector<vis_line_t>::*f) (vis_line_t),
+        bookmark_type_t *bt,
+        vis_line_t top);
 bool moveto_cluster(vis_line_t(bookmark_vector<vis_line_t>::*f) (vis_line_t),
         bookmark_type_t *bt,
         vis_line_t top);

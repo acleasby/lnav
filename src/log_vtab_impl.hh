@@ -70,61 +70,38 @@ struct log_cursor {
 class log_vtab_impl {
 public:
     struct vtab_column {
-        vtab_column(const char *name = NULL,
+        vtab_column(const std::string name = "",
                     int type = SQLITE3_TEXT,
                     const char *collator = NULL,
                     bool hidden = false)
             : vc_name(name), vc_type(type), vc_collator(collator), vc_hidden(hidden) { };
 
-        const char *vc_name;
+        std::string vc_name;
         int         vc_type;
         const char *vc_collator;
         bool vc_hidden;
     };
 
-    log_vtab_impl(const std::string name)
-        : vi_name(name) {
+    log_vtab_impl(const intern_string_t name) : vi_supports_indexes(true), vi_name(name) {
         this->vi_attrs.resize(128);
     };
     virtual ~log_vtab_impl() { };
 
-    const std::string &get_name(void) const
+    const intern_string_t get_name(void) const
     {
         return this->vi_name;
     };
 
     std::string get_table_statement(void);
 
-    virtual bool next(log_cursor &lc, logfile_sub_source &lss)
-    {
-        lc.lc_curr_line = lc.lc_curr_line + vis_line_t(1);
-        lc.lc_sub_index = 0;
-
-        if (lc.is_eof()) {
-            return true;
-        }
-
-        content_line_t    cl(lss.at(lc.lc_curr_line));
-        logfile *         lf      = lss.find(cl);
-        logfile::iterator lf_iter = lf->begin() + cl;
-
-        if (lf_iter->get_level() & logline::LEVEL_CONTINUED) {
-            return false;
-        }
-
-        log_format *format = lf->get_format();
-        if (format != NULL && format->get_name() == this->vi_name) {
-            return true;
-        }
-
-        return false;
-    };
+    virtual bool next(log_cursor &lc, logfile_sub_source &lss) = 0;
 
     virtual void get_columns(std::vector<vtab_column> &cols) { };
 
     virtual void get_foreign_keys(std::vector<std::string> &keys_inout)
     {
         keys_inout.push_back("log_line");
+        keys_inout.push_back("min(log_line)");
         keys_inout.push_back("log_mark");
     };
 
@@ -138,31 +115,86 @@ public:
         format->annotate(line, this->vi_attrs, values);
     };
 
+    bool vi_supports_indexes;
     int vi_column_count;
-private:
+protected:
+    const intern_string_t vi_name;
     string_attrs_t vi_attrs;
-    const std::string vi_name;
+};
+
+class log_format_vtab_impl : public log_vtab_impl {
+
+public:
+    log_format_vtab_impl(const log_format &format) :
+            log_vtab_impl(format.get_name()), lfvi_format(format) {
+
+    }
+
+    virtual bool next(log_cursor &lc, logfile_sub_source &lss)
+    {
+        lc.lc_curr_line = lc.lc_curr_line + vis_line_t(1);
+        lc.lc_sub_index = 0;
+
+        if (lc.is_eof()) {
+            return true;
+        }
+
+        content_line_t    cl(lss.at(lc.lc_curr_line));
+        logfile *         lf      = lss.find(cl);
+        logfile::iterator lf_iter = lf->begin() + cl;
+        uint8_t mod_id = lf_iter->get_module_id();
+
+        if (lf_iter->get_level() & logline::LEVEL_CONTINUED) {
+            return false;
+        }
+
+        log_format *format = lf->get_format();
+        if (format->get_name() == this->lfvi_format.get_name()) {
+            return true;
+        } else if (mod_id && mod_id == this->lfvi_format.lf_mod_index) {
+            // XXX
+            return true;
+        }
+
+        return false;
+    };
+
+protected:
+    const log_format &lfvi_format;
+
 };
 
 typedef int (*sql_progress_callback_t)(const log_cursor &lc);
 
+extern sql_progress_callback_t log_vtab_progress_callback;
+
+class sql_progress_guard {
+public:
+    sql_progress_guard(sql_progress_callback_t cb) {
+        log_vtab_progress_callback = cb;
+    };
+
+    ~sql_progress_guard() {
+        log_vtab_progress_callback = NULL;
+    };
+};
+
 class log_vtab_manager {
 public:
-    typedef std::map<std::string, log_vtab_impl *>::const_iterator iterator;
+    typedef std::map<intern_string_t, log_vtab_impl *>::const_iterator iterator;
 
     log_vtab_manager(sqlite3 *db,
                      textview_curses &tc,
-                     logfile_sub_source &lss,
-                     sql_progress_callback_t);
+                     logfile_sub_source &lss);
 
     textview_curses *get_view() const { return &this->vm_textview; };
 
     logfile_sub_source *get_source() { return &this->vm_source; };
 
     std::string register_vtab(log_vtab_impl *vi);
-    std::string unregister_vtab(std::string name);
+    std::string unregister_vtab(intern_string_t name);
 
-    log_vtab_impl *lookup_impl(std::string name)
+    log_vtab_impl *lookup_impl(intern_string_t name)
     {
         return this->vm_impls[name];
     };
@@ -181,6 +213,6 @@ private:
     sqlite3 *           vm_db;
     textview_curses &vm_textview;
     logfile_sub_source &vm_source;
-    std::map<std::string, log_vtab_impl *> vm_impls;
+    std::map<intern_string_t, log_vtab_impl *> vm_impls;
 };
 #endif

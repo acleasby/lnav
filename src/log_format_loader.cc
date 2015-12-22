@@ -34,14 +34,17 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <libgen.h>
 
 #include <map>
 #include <string>
+#include <fstream>
 
 #include "yajlpp.hh"
 #include "lnav_config.hh"
 #include "log_format.hh"
 #include "auto_fd.hh"
+#include "sql_util.hh"
 #include "format-text-files.hh"
 #include "default-log-formats-json.hh"
 
@@ -51,22 +54,33 @@
 
 using namespace std;
 
-static map<string, external_log_format *> LOG_FORMATS;
+static map<intern_string_t, external_log_format *> LOG_FORMATS;
+
+struct userdata {
+    std::string ud_format_path;
+    vector<intern_string_t> *ud_format_names;
+};
 
 static external_log_format *ensure_format(yajlpp_parse_context *ypc)
 {
-    const string &name = ypc->get_path_fragment(0);
-    vector<string> *formats = (vector<string> *)ypc->ypc_userdata;
+    const intern_string_t name = ypc->get_path_fragment_i(0);
+    struct userdata *ud = (userdata *) ypc->ypc_userdata;
+    vector<intern_string_t> *formats = ud->ud_format_names;
     external_log_format *retval;
 
     retval = LOG_FORMATS[name];
     if (retval == NULL) {
         LOG_FORMATS[name] = retval = new external_log_format(name);
+        log_debug("Loading format -- %s", name.get());
     }
     retval->elf_source_path.insert(ypc->ypc_source.substr(0, ypc->ypc_source.rfind('/')));
 
     if (find(formats->begin(), formats->end(), name) == formats->end()) {
         formats->push_back(name);
+    }
+
+    if (ud->ud_format_path.empty()) {
+        retval->elf_builtin_format = true;
     }
 
     return retval;
@@ -78,8 +92,27 @@ static int read_format_regex(yajlpp_parse_context *ypc, const unsigned char *str
     string regex_name = ypc->get_path_fragment(2);
     string value = string((const char *)str, len);
 
-    log_debug("regex: %s", value.c_str());
-    elf->elf_patterns[regex_name].p_string = value;
+    log_debug(" format regex: %s/%s = %s",
+            elf->get_name().get(), regex_name.c_str(), value.c_str());
+    struct external_log_format::pattern &pat = elf->elf_patterns[regex_name];
+
+    pat.p_config_path = ypc->get_path().to_string();
+    pat.p_string = value;
+
+    return 1;
+}
+
+static int read_format_regex_bool(yajlpp_parse_context *ypc, int val)
+{
+    external_log_format *elf = ensure_format(ypc);
+    string regex_name = ypc->get_path_fragment(2);
+    string field_name = ypc->get_path_fragment(3);
+    struct external_log_format::pattern &pat = elf->elf_patterns[regex_name];
+
+    if (field_name == "module-format") {
+        elf->elf_has_module_format = true;
+        pat.p_module_format = val;
+    }
 
     return 1;
 }
@@ -93,6 +126,10 @@ static int read_format_bool(yajlpp_parse_context *ypc, int val)
         elf->lf_date_time.dts_local_time = val;
     else if (field_name == "json")
         elf->jlf_json = val;
+    else if (field_name == "hide-extra")
+        elf->jlf_hide_extra = val;
+    else if (field_name == "multiline")
+        elf->elf_multiline = val;
 
     return 1;
 }
@@ -147,6 +184,15 @@ static int read_format_field(yajlpp_parse_context *ypc, const unsigned char *str
         elf->lf_timestamp_field = intern_string::lookup(value);
     else if (field_name == "body-field")
         elf->elf_body_field = intern_string::lookup(value);
+    else if (field_name == "timestamp-format")
+        elf->lf_timestamp_format.push_back(intern_string::lookup(value)->get());
+    else if (field_name == "module-field") {
+        elf->elf_module_id_field = intern_string::lookup(value);
+        elf->elf_container = true;
+    }
+    else if (field_name == "opid-field") {
+        elf->elf_opid_field = intern_string::lookup(value);
+    }
 
     return 1;
 }
@@ -155,7 +201,8 @@ static int read_levels(yajlpp_parse_context *ypc, const unsigned char *str, size
 {
     external_log_format *elf = ensure_format(ypc);
     string regex = string((const char *)str, len);
-    logline::level_t level = logline::string2level(ypc->get_path_fragment(2).c_str());
+    string level_name_or_number = ypc->get_path_fragment(2);
+    logline::level_t level = logline::string2level(level_name_or_number.c_str());
 
     elf->elf_level_patterns[level].lp_regex = regex;
 
@@ -369,19 +416,23 @@ static int read_json_variable_num(yajlpp_parse_context *ypc, long long val)
 
 static struct json_path_handler format_handlers[] = {
     json_path_handler("^/\\w+/regex/[^/]+/pattern$", read_format_regex),
-    json_path_handler("^/\\w+/(json|convert-to-local-time)$", read_format_bool),
+    json_path_handler("^/\\w+/regex/[^/]+/module-format$", read_format_regex_bool),
+    json_path_handler("^/\\w+/(json|convert-to-local-time|epoch-timestamp|"
+        "hide-extra|multiline)$", read_format_bool),
     json_path_handler("^/\\w+/timestamp-divisor$", read_format_double)
         .add_cb(read_format_int),
-    json_path_handler("^/\\w+/(file-pattern|level-field|timestamp-field|body-field|url|url#|title|description)$",
+    json_path_handler("^/\\w+/(file-pattern|level-field|timestamp-field|"
+                              "body-field|url|url#|title|description|"
+                              "timestamp-format#|module-field|opid-field)$",
                       read_format_field),
     json_path_handler("^/\\w+/level/"
-                      "(trace|debug|info|warning|error|critical|fatal)$",
+                      "(trace|debug\\d*|info|stats|warning|error|critical|fatal)$",
                       read_levels),
-    json_path_handler("^/\\w+/value/\\w+/(kind|collate|unit/field)$", read_value_def),
-    json_path_handler("^/\\w+/value/\\w+/(identifier|foreign-key|hidden)$", read_value_bool),
-    json_path_handler("^/\\w+/value/\\w+/unit/scaling-factor/.*$",
+    json_path_handler("^/\\w+/value/.+/(kind|collate|unit/field)$", read_value_def),
+    json_path_handler("^/\\w+/value/.+/(identifier|foreign-key|hidden)$", read_value_bool),
+    json_path_handler("^/\\w+/value/.+/unit/scaling-factor/.*$",
         read_scaling),
-    json_path_handler("^/\\w+/value/\\w+/action-list#", read_value_action),
+    json_path_handler("^/\\w+/value/.+/action-list#", read_value_action),
     json_path_handler("^/\\w+/action/\\w+/label", read_action_def),
     json_path_handler("^/\\w+/action/\\w+/capture-output", read_action_bool),
     json_path_handler("^/\\w+/action/\\w+/cmd#", read_action_cmd),
@@ -420,14 +471,17 @@ static void write_sample_file(void)
     }
 }
 
-std::vector<string> load_format_file(const string &filename, std::vector<string> &errors)
+std::vector<intern_string_t> load_format_file(const string &filename, std::vector<string> &errors)
 {
-    std::vector<string> retval;
+    std::vector<intern_string_t> retval;
+    struct userdata ud;
     auto_fd fd;
 
     log_info("loading formats from file: %s", filename.c_str());
+    ud.ud_format_path = filename;
+    ud.ud_format_names = &retval;
     yajlpp_parse_context ypc(filename, format_handlers);
-    ypc.ypc_userdata = &retval;
+    ypc.ypc_userdata = &ud;
     if ((fd = open(filename.c_str(), O_RDONLY)) == -1) {
         char errmsg[1024];
 
@@ -437,10 +491,10 @@ std::vector<string> load_format_file(const string &filename, std::vector<string>
         errors.push_back(errmsg);
     }
     else {
-        yajl_handle handle;
+        auto_mem<yajl_handle_t> handle(yajl_free);
         char buffer[2048];
         off_t offset = 0;
-        int rc = -1;
+        ssize_t rc = -1;
 
         handle = yajl_alloc(&ypc.ypc_callbacks, NULL, &ypc);
         yajl_config(handle, yajl_allow_comments, 1);
@@ -475,7 +529,6 @@ std::vector<string> load_format_file(const string &filename, std::vector<string>
                         string((char *)yajl_get_error(handle, 0, NULL, 0)));
             }
         }
-        yajl_free(handle);
     }
 
     return retval;
@@ -490,11 +543,18 @@ static void load_from_path(const string &path, std::vector<string> &errors)
     if (glob(format_path.c_str(), 0, NULL, gl.inout()) == 0) {
         for (int lpc = 0; lpc < (int)gl->gl_pathc; lpc++) {
             string filename(gl->gl_pathv[lpc]);
-            vector<string> format_list;
+            vector<intern_string_t> format_list;
 
             format_list = load_format_file(filename, errors);
             if (format_list.empty()) {
                 log_warning("Empty format file: %s", filename.c_str());
+            }
+            else {
+                for (vector<intern_string_t>::iterator iter = format_list.begin();
+                        iter != format_list.end();
+                        ++iter) {
+                    log_info("  found format: %s", iter->get());
+                }
             }
         }
     }
@@ -505,13 +565,16 @@ void load_formats(const std::vector<std::string> &extra_paths,
 {
     string default_source = string(dotlnav_path("formats") + "/default/");
     yajlpp_parse_context ypc_builtin(default_source, format_handlers);
-    std::vector<std::string> retval;
+    std::vector<intern_string_t> retval;
+    struct userdata ud;
     yajl_handle handle;
 
     write_sample_file();
 
+    log_debug("Loading default formats");
     handle = yajl_alloc(&ypc_builtin.ypc_callbacks, NULL, &ypc_builtin);
-    ypc_builtin.ypc_userdata = &retval;
+    ud.ud_format_names = &retval;
+    ypc_builtin.ypc_userdata = &ud;
     yajl_config(handle, yajl_allow_comments, 1);
     if (yajl_parse(handle,
                    (const unsigned char *)default_log_formats_json,
@@ -532,13 +595,171 @@ void load_formats(const std::vector<std::string> &extra_paths,
         load_from_path(*path_iter, errors);
     }
 
-    for (map<string, external_log_format *>::iterator iter = LOG_FORMATS.begin();
+    uint8_t mod_counter = 0;
+
+    vector<external_log_format *> alpha_ordered_formats;
+    for (map<intern_string_t, external_log_format *>::iterator iter = LOG_FORMATS.begin();
          iter != LOG_FORMATS.end();
          ++iter) {
-        iter->second->build(errors);
+        external_log_format *elf = iter->second;
+        elf->build(errors);
+
+        if (elf->elf_has_module_format) {
+            mod_counter += 1;
+            elf->lf_mod_index = mod_counter;
+        }
+
+        for (map<intern_string_t, external_log_format *>::iterator check_iter = LOG_FORMATS.begin();
+             check_iter != LOG_FORMATS.end();
+             ++check_iter) {
+            if (iter->first == check_iter->first) {
+                continue;
+            }
+
+            external_log_format *check_elf = check_iter->second;
+            if (elf->match_samples(check_elf->elf_samples)) {
+                log_warning("Format collision, format '%s' matches sample from '%s'",
+                        elf->get_name().get(),
+                        check_elf->get_name().get());
+                elf->elf_collision.push_back(check_elf->get_name());
+            }
+        }
 
         if (errors.empty()) {
-            log_format::get_root_formats().insert(log_format::get_root_formats().begin(), iter->second);
+            alpha_ordered_formats.push_back(elf);
         }
+    }
+
+    vector<external_log_format *> &graph_ordered_formats =
+            external_log_format::GRAPH_ORDERED_FORMATS;
+
+    while (!alpha_ordered_formats.empty()) {
+        vector<intern_string_t> popped_formats;
+
+        for (vector<external_log_format *>::iterator iter = alpha_ordered_formats.begin();
+             iter != alpha_ordered_formats.end();) {
+            external_log_format *elf = *iter;
+            if (elf->elf_collision.empty()) {
+                iter = alpha_ordered_formats.erase(iter);
+                popped_formats.push_back(elf->get_name());
+                graph_ordered_formats.push_back(elf);
+            }
+            else {
+                ++iter;
+            }
+        }
+
+        if (popped_formats.empty() && !alpha_ordered_formats.empty()) {
+            bool broke_cycle = false;
+
+            log_warning("Detected a cycle...");
+            for (vector<external_log_format *>::iterator iter = alpha_ordered_formats.begin();
+                 iter != alpha_ordered_formats.end();
+                 ++iter) {
+                external_log_format *elf = *iter;
+
+                if (elf->elf_builtin_format) {
+                    log_warning("  Skipping builtin format -- %s",
+                                elf->get_name().get());
+                } else {
+                    log_warning("  Breaking cycle by picking -- %s",
+                                elf->get_name().get());
+                    elf->elf_collision.clear();
+                    broke_cycle = true;
+                    break;
+                }
+            }
+            if (!broke_cycle) {
+                alpha_ordered_formats.front()->elf_collision.clear();
+            }
+        }
+
+        for (vector<external_log_format *>::iterator iter = alpha_ordered_formats.begin();
+             iter != alpha_ordered_formats.end();
+             ++iter) {
+            external_log_format *elf = *iter;
+            for (vector<intern_string_t>::iterator pop_iter = popped_formats.begin();
+                    pop_iter != popped_formats.end();
+                    ++pop_iter) {
+                elf->elf_collision.remove(*pop_iter);
+            }
+        }
+    }
+
+    log_info("Format order:")
+    for (vector<external_log_format *>::iterator iter = graph_ordered_formats.begin();
+            iter != graph_ordered_formats.end();
+            ++iter) {
+        log_info("  %s", (*iter)->get_name().get());
+    }
+
+    vector<log_format *> &roots = log_format::get_root_formats();
+    roots.insert(roots.begin(), graph_ordered_formats.begin(), graph_ordered_formats.end());
+}
+
+static void exec_sql_in_path(sqlite3 *db, const string &path, std::vector<string> &errors)
+{
+    string format_path = path + "/formats/*/*.sql";
+    static_root_mem<glob_t, globfree> gl;
+
+    log_info("executing SQL files in path: %s", format_path.c_str());
+    if (glob(format_path.c_str(), 0, NULL, gl.inout()) == 0) {
+        for (int lpc = 0; lpc < (int)gl->gl_pathc; lpc++) {
+            string filename(gl->gl_pathv[lpc]);
+            string content;
+
+            if (read_file(filename.c_str(), content)) {
+                log_info("Executing SQL file: %s", filename.c_str());
+                sql_execute_script(db, filename.c_str(), content.c_str(), errors);
+            }
+            else {
+                errors.push_back("Unable to read file: " + filename);
+            }
+        }
+    }
+}
+
+void load_format_extra(sqlite3 *db,
+                       const std::vector<std::string> &extra_paths,
+                       std::vector<std::string> &errors)
+{
+    exec_sql_in_path(db, "/etc/lnav", errors);
+    exec_sql_in_path(db, SYSCONFDIR "/lnav", errors);
+    exec_sql_in_path(db, dotlnav_path(""), errors);
+
+    for (vector<string>::const_iterator path_iter = extra_paths.begin();
+         path_iter != extra_paths.end();
+         ++path_iter) {
+        exec_sql_in_path(db, *path_iter, errors);
+    }
+}
+
+static void find_format_in_path(const string &path,
+                                std::map<std::string, std::vector<std::string> > &scripts)
+{
+    string format_path = path + "/formats/*/*.lnav";
+    static_root_mem<glob_t, globfree> gl;
+
+    if (glob(format_path.c_str(), 0, NULL, gl.inout()) == 0) {
+        for (int lpc = 0; lpc < (int)gl->gl_pathc; lpc++) {
+            const char *filename = basename(gl->gl_pathv[lpc]);
+            string script_name = string(filename, strlen(filename) - 5);
+
+            scripts[script_name].push_back(gl->gl_pathv[lpc]);
+        }
+    }
+}
+
+void find_format_scripts(const std::vector<std::string> &extra_paths,
+                         std::map<std::string, std::vector<std::string> > &scripts)
+{
+    find_format_in_path("/etc/lnav", scripts);
+    find_format_in_path(SYSCONFDIR "/lnav", scripts);
+    find_format_in_path(dotlnav_path(""), scripts);
+
+    for (vector<string>::const_iterator path_iter = extra_paths.begin();
+         path_iter != extra_paths.end();
+         ++path_iter) {
+        find_format_in_path(*path_iter, scripts);
     }
 }

@@ -71,10 +71,18 @@ Spatial Navigation
      - |ks| ← |ke|
      -
      - Left half a page
+   * - |ks| Shift |ke| + |ks| h |ke|
+     - |ks| Shift |ke| + |ks| ← |ke|
+     -
+     - Left ten columns
    * - |ks| l |ke|
      - |ks| → |ke|
      -
      - Right half a page
+   * - |ks| Shift |ke| + |ks| l |ke|
+     - |ks| Shift |ke| + |ks| → |ke|
+     -
+     - Right ten columns
    * - |ks| Home |ke|
      - |ks| g |ke|
      -
@@ -107,6 +115,10 @@ Spatial Navigation
      - |ks| Shift |ke| + |ks| u |ke|
      - 
      - Next/previous bookmark
+   * - |ks| o |ke|
+     - |ks| Shift |ke| + |ks| o |ke|
+     -
+     - Forward/backward through log messages with a matching "opid" field
    * - |ks| y |ke|
      - |ks| Shift |ke| + |ks| y |ke|
      -
@@ -126,9 +138,6 @@ Chronological Navigation
    * - Keypress
      -
      - Command
-   * - |ks| o |ke|
-     - |ks| Shift |ke| + |ks| o |ke|
-     - Forward/backward 60 minutes
    * - |ks| d |ke|
      - |ks| Shift |ke| + |ks| d |ke|
      - Forward/backward 24 hours
@@ -138,6 +147,9 @@ Chronological Navigation
    * - |ks| 0 |ke|
      - |ks| Shift |ke| + |ks| 0 |ke|
      - Next/previous day
+   * - |ks| r |ke|
+     - |ks| Shift |ke| + |ks| r |ke|
+     - Forward/backward by the relative time that was last used with the goto command.
 
 Bookmarks
 ---------
@@ -175,7 +187,7 @@ Display
    * - |ks| q |ke|
      - Return to the previous view/quit
    * - |ks| Shift |ke| + |ks| p |ke|
-     - Switch to/from the pretty-printed view of the displayed log messages
+     - Switch to/from the pretty-printed view of the displayed log or text files
    * - |ks| Shift |ke| + |ks| t |ke|
      - Display elapsed time between lines
    * - |ks| t |ke|
@@ -193,7 +205,7 @@ Display
      - Toggle the display of the log parser results
    * - |ks| Tab |ke|
      - Cycle through colums to graph in the SQL result view
-   * - |ks| Shift |ke| + |ks| l |ke|
+   * - |ks| Ctrl |ke| + |ks| l |ke|
      - Switch to lo-fi mode.  The displayed log lines will be dumped to the
        terminal without any decorations so they can be copied easily.
 
@@ -212,5 +224,7 @@ Query
      - Execute an SQL query
    * - |ks| : |ke|
      - Execute an internal command, see :ref:`commands` for more information
+   * - |ks| \| |ke|
+     - Execute an lnav script located in a format directory.
    * - |ks| Ctrl |ke| + |ks| ] |ke|
      - Abort a 

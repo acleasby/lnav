@@ -77,6 +77,10 @@ public:
 public:
         virtual ~label_source() { };
 
+        virtual size_t hist_label_width() {
+            return INT_MAX;
+        };
+
         virtual void hist_label_for_group(int group,
                                           std::string &label_out) { };
 
@@ -130,6 +134,11 @@ public:
     size_t text_line_count()
     {
         return (this->buckets_per_group() + 1) * this->hs_groups.size();
+    };
+
+    size_t text_line_width() {
+        return this->hs_label_source == NULL ? 0 :
+               this->hs_label_source->hist_label_width();
     };
 
     void set_role_for_type(bucket_type_t bt, view_colors::role_t role)
@@ -267,4 +276,393 @@ protected:
     bucket_t *hs_token_bucket;
     std::vector<bucket_type_t> hs_displayed_buckets;
 };
+
+template<typename T>
+class stacked_bar_chart {
+
+public:
+    stacked_bar_chart()
+            : sbc_do_stacking(true), sbc_left(0), sbc_right(0), sbc_ident_to_show(-1) {
+
+    };
+
+    virtual ~stacked_bar_chart() { };
+
+    stacked_bar_chart &with_stacking_enabled(bool enabled) {
+        this->sbc_do_stacking = enabled;
+        return *this;
+    };
+
+    stacked_bar_chart &with_attrs_for_ident(const T &ident, int attrs) {
+        struct chart_ident &ci = this->find_ident(ident);
+        ci.ci_attrs = attrs;
+        return *this;
+    };
+
+    stacked_bar_chart &with_margins(unsigned long left, unsigned long right) {
+        this->sbc_left = left;
+        this->sbc_right = right;
+        return *this;
+    };
+
+    int show_next_ident(int offset = 1) {
+        this->sbc_ident_to_show += offset;
+        if (this->sbc_ident_to_show < -1) {
+            this->sbc_ident_to_show = this->sbc_idents.size() - 1;
+        }
+        else if (this->sbc_ident_to_show >= this->sbc_idents.size()) {
+            this->sbc_ident_to_show = -1;
+        }
+        return this->sbc_ident_to_show;
+    };
+
+    void get_ident_to_show(T &ident_out) {
+        if (this->sbc_ident_to_show != -1) {
+            ident_out = this->sbc_idents[this->sbc_ident_to_show].ci_ident;
+        }
+    };
+
+    void chart_attrs_for_value(const listview_curses &lc,
+                               int &left,
+                               const T &ident,
+                               double value,
+                               string_attrs_t &value_out) const
+    {
+        typename std::map<T, unsigned int>::const_iterator ident_iter = this->sbc_ident_lookup.find(ident);
+
+        require(ident_iter != this->sbc_ident_lookup.end());
+
+        int ident_index = ident_iter->second;
+        unsigned long width, avail_width;
+        bucket_stats_t overall_stats;
+        struct line_range lr;
+        vis_line_t height;
+
+        if (this->sbc_ident_to_show != -1 &&
+            this->sbc_ident_to_show != ident_index) {
+            return;
+        }
+
+        lc.get_dimensions(height, width);
+
+        for (int lpc = 0; lpc < this->sbc_idents.size(); lpc++) {
+            if (this->sbc_ident_to_show == -1 || lpc == this->sbc_ident_to_show) {
+                overall_stats.merge(this->sbc_idents[lpc].ci_stats, this->sbc_do_stacking);
+            }
+        }
+
+        if (this->sbc_ident_to_show == -1) {
+            avail_width = width - this->sbc_idents.size();
+        }
+        else {
+            avail_width = width - 1;
+        }
+        avail_width -= this->sbc_left + this->sbc_right;
+
+        lr.lr_start = left;
+
+        const struct chart_ident &ci = this->sbc_idents[ident_index];
+        int amount;
+
+        if (value == 0.0) {
+            amount = 0;
+        }
+        else if ((overall_stats.bs_max_value - 0.01) <= value &&
+                 value <= (overall_stats.bs_max_value + 0.01)) {
+            amount = avail_width;
+        }
+        else {
+            double percent = (value - overall_stats.bs_min_value) /
+                             overall_stats.width();
+            amount = (int) rint(percent * avail_width);
+            amount = std::max(1, amount);
+        }
+        lr.lr_end = left = lr.lr_start + amount;
+
+        if (ci.ci_attrs != 0) {
+            value_out.push_back(string_attr(lr,
+                                            &view_curses::VC_STYLE,
+                                            ci.ci_attrs | A_REVERSE));
+        }
+    };
+
+    void clear(void) {
+        this->sbc_idents.clear();
+        this->sbc_ident_lookup.clear();
+        this->sbc_ident_to_show = -1;
+    };
+
+    void add_value(const T &ident, double amount = 1.0) {
+        struct chart_ident &ci = this->find_ident(ident);
+        ci.ci_stats.update(amount);
+    };
+
+protected:
+    struct bucket_stats_t {
+        bucket_stats_t() :
+                bs_min_value(std::numeric_limits<double>::max()),
+                bs_max_value(0)
+        {
+        };
+
+        void merge(const bucket_stats_t &rhs, bool do_stacking) {
+            this->bs_min_value = std::min(this->bs_min_value, rhs.bs_min_value);
+            if (do_stacking) {
+                this->bs_max_value += rhs.bs_max_value;
+            }
+            else {
+                this->bs_max_value = std::max(this->bs_max_value, rhs.bs_max_value);
+            }
+        };
+
+        double width() const {
+            return fabs(this->bs_max_value - this->bs_min_value);
+        };
+
+        void update(double value) {
+            this->bs_max_value = std::max(this->bs_max_value, value);
+            this->bs_min_value = std::min(this->bs_min_value, value);
+        };
+
+        double bs_min_value;
+        double bs_max_value;
+    };
+
+    struct chart_ident {
+        chart_ident(const T &ident) : ci_ident(ident) { };
+
+        T ci_ident;
+        int ci_attrs;
+        bucket_stats_t ci_stats;
+    };
+
+    struct chart_ident &find_ident(const T &ident) {
+        typename std::map<T, unsigned int>::iterator iter;
+
+        iter = this->sbc_ident_lookup.find(ident);
+        if (iter == this->sbc_ident_lookup.end()) {
+            this->sbc_ident_lookup[ident] = this->sbc_idents.size();
+            this->sbc_idents.push_back(ident);
+            return this->sbc_idents.back();
+        }
+        return this->sbc_idents[iter->second];
+    };
+
+    bool sbc_do_stacking;
+    unsigned long sbc_left, sbc_right;
+    std::vector<struct chart_ident> sbc_idents;
+    std::map<T, unsigned int> sbc_ident_lookup;
+    int sbc_ident_to_show;
+};
+
+class hist_source2 : public text_sub_source {
+public:
+
+    typedef enum {
+        HT_NORMAL,
+        HT_WARNING,
+        HT_ERROR,
+        HT_MARK,
+
+        HT__MAX
+    } hist_type_t;
+
+    hist_source2() : hs_time_slice(10 * 60) {
+        this->clear();
+    };
+
+    void init() {
+        view_colors &vc = view_colors::singleton();
+
+        this->hs_chart
+                .with_attrs_for_ident(HT_NORMAL,
+                                      vc.attrs_for_role(view_colors::VCR_TEXT))
+                .with_attrs_for_ident(HT_WARNING,
+                                      vc.attrs_for_role(view_colors::VCR_WARNING))
+                .with_attrs_for_ident(HT_ERROR,
+                                      vc.attrs_for_role(view_colors::VCR_ERROR))
+                .with_attrs_for_ident(HT_MARK,
+                                      vc.attrs_for_role(view_colors::VCR_KEYWORD));
+    };
+
+    void set_time_slice(int64_t slice) {
+        require(slice >= 60);
+        require((slice % 60) == 0);
+
+        this->hs_time_slice = slice;
+    };
+
+    int64_t get_time_slice() const {
+        return this->hs_time_slice;
+    };
+
+    size_t text_line_count() {
+        return this->hs_line_count;
+    };
+
+    size_t text_line_width() {
+        return strlen(LINE_FORMAT) + 8 * 4;
+    };
+
+    void clear(void) {
+        this->hs_line_count = 0;
+        this->hs_last_bucket = -1;
+        this->hs_last_row = -1;
+        this->hs_blocks.clear();
+        this->hs_chart.clear();
+        this->init();
+    };
+
+    void add_value(time_t row, hist_type_t htype, double value = 1.0) {
+        require(row >= this->hs_last_row);
+
+        row = rounddown(row, this->hs_time_slice);
+        if (row != this->hs_last_row) {
+            this->end_of_row();
+
+            this->hs_last_bucket += 1;
+            this->hs_last_row = row;
+        }
+
+        bucket_t &bucket = this->find_bucket(this->hs_last_bucket);
+        bucket.b_time = row;
+        bucket.b_values[htype].hv_value += value;
+    };
+
+    void end_of_row() {
+        if (this->hs_last_bucket >= 0) {
+            bucket_t &last_bucket = this->find_bucket(this->hs_last_bucket);
+
+            for (int lpc = 0; lpc < HT__MAX; lpc++) {
+                this->hs_chart.add_value(
+                        (const hist_type_t) lpc,
+                        last_bucket.b_values[lpc].hv_value);
+            }
+        }
+    };
+
+    void text_value_for_line(textview_curses &tc,
+                             int row,
+                             std::string &value_out,
+                             bool no_scrub) {
+        bucket_t &bucket = this->find_bucket(row);
+        struct tm bucket_tm;
+        char tm_buffer[128];
+        char line[256];
+
+        if (gmtime_r(&bucket.b_time, &bucket_tm) != NULL) {
+            strftime(tm_buffer, sizeof(tm_buffer),
+                     " %a %b %d %H:%M  ",
+                     &bucket_tm);
+        }
+        else {
+            log_error("no time?");
+            tm_buffer[0] = '\0';
+        }
+        snprintf(line, sizeof(line),
+                 LINE_FORMAT,
+                 (int) rint(bucket.b_values[HT_NORMAL].hv_value),
+                 (int) rint(bucket.b_values[HT_ERROR].hv_value),
+                 (int) rint(bucket.b_values[HT_WARNING].hv_value),
+                 (int) rint(bucket.b_values[HT_MARK].hv_value));
+
+        value_out.clear();
+        value_out.append(tm_buffer);
+        value_out.append(line);
+    };
+
+    void text_attrs_for_line(textview_curses &tc,
+                             int row,
+                             string_attrs_t &value_out) {
+        bucket_t &bucket = this->find_bucket(row);
+        int left = 0;
+
+        for (int lpc = 0; lpc < HT__MAX; lpc++) {
+            this->hs_chart.chart_attrs_for_value(
+                    tc, left, (const hist_type_t) lpc,
+                    bucket.b_values[lpc].hv_value,
+                    value_out);
+        }
+    };
+
+    size_t text_size_for_line(textview_curses &tc, int row, bool raw) {
+        return 0;
+    };
+
+    time_t time_for_row(int64_t row) {
+        require(row >= 0);
+        require(row < this->hs_line_count);
+
+        bucket_t &bucket = this->find_bucket(row);
+
+        return bucket.b_time;
+    };
+
+    int64_t row_for_time(time_t time_bucket) {
+        std::map<int64_t, struct bucket_block>::iterator iter;
+        int64_t retval = 0;
+
+        time_bucket = rounddown(time_bucket, this->hs_time_slice);
+
+        for (iter = this->hs_blocks.begin();
+             iter != this->hs_blocks.end();
+             ++iter) {
+            struct bucket_block &bb = iter->second;
+
+            if (time_bucket < bb.bb_buckets[0].b_time) {
+                break;
+            }
+            if (time_bucket > bb.bb_buckets[bb.bb_used].b_time) {
+                retval += bb.bb_used + 1;
+                continue;
+            }
+
+            for (unsigned int lpc = 0; lpc <= bb.bb_used; lpc++, retval++) {
+                if (time_bucket <= bb.bb_buckets[lpc].b_time) {
+                    return retval;
+                }
+            }
+        }
+        return retval;
+    };
+
+private:
+    static const char *LINE_FORMAT;
+
+    struct hist_value {
+        double hv_value;
+    };
+
+    struct bucket_t {
+        time_t b_time;
+        hist_value b_values[HT__MAX];
+    };
+
+    static const unsigned int BLOCK_SIZE = 100;
+
+    struct bucket_block {
+        bucket_block() : bb_used(0) {
+            memset(this->bb_buckets, 0, sizeof(this->bb_buckets));
+        };
+
+        unsigned int bb_used;
+        bucket_t bb_buckets[BLOCK_SIZE];
+    };
+
+    bucket_t &find_bucket(int64_t index) {
+        struct bucket_block &bb = this->hs_blocks[index / this->BLOCK_SIZE];
+        unsigned int intra_block_index = index % BLOCK_SIZE;
+        bb.bb_used = std::max(intra_block_index, bb.bb_used);
+        this->hs_line_count = std::max(this->hs_line_count, index + 1);
+        return bb.bb_buckets[intra_block_index];
+    };
+
+    int64_t hs_time_slice;
+    int64_t hs_line_count;
+    int64_t hs_last_bucket;
+    time_t hs_last_row;
+    std::map<int64_t, struct bucket_block> hs_blocks;
+    stacked_bar_chart<hist_type_t> hs_chart;
+};
+
 #endif

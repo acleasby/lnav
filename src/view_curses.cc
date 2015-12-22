@@ -48,6 +48,7 @@ const struct itimerval ui_periodic_timer::INTERVAL = {
 };
 
 ui_periodic_timer::ui_periodic_timer()
+        : upt_counter(0)
 {
     struct sigaction sa;
 
@@ -155,7 +156,7 @@ void view_curses::mvwattrline(WINDOW *window,
 
         tab_iter = tab_list.lower_bound(attr_range.lr_start);
         if (tab_iter != tab_list.end()) {
-            if (attr_range.lr_start > tab_iter->first) {
+            if ((size_t)attr_range.lr_start > tab_iter->first) {
                 attr_range.lr_start += (tab_iter->second - tab_iter->first) - 1;
             }
         }
@@ -163,7 +164,7 @@ void view_curses::mvwattrline(WINDOW *window,
         if (attr_range.lr_end != -1) {
             tab_iter = tab_list.lower_bound(attr_range.lr_end);
             if (tab_iter != tab_list.end()) {
-                if (attr_range.lr_end >= tab_iter->first) {
+                if ((size_t)attr_range.lr_end > tab_iter->first) {
                     attr_range.lr_end += (
                         tab_iter->second - tab_iter->first) - 1;
                 }

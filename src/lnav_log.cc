@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <libgen.h>
+#include <pthread.h>
 
 #ifdef HAVE_EXECINFO_H
 #include <execinfo.h>
@@ -68,8 +69,7 @@
 #endif
 
 #include "lnav_log.hh"
-
-#include "pcrepp.hh"
+#include "pthreadpp.hh"
 
 static const size_t BUFFER_SIZE = 256 * 1024;
 static const size_t MAX_LOG_LINE_SIZE = 2048;
@@ -85,9 +85,12 @@ static const char *CRASH_MSG =
     "=========================\n";
 
 FILE *lnav_log_file;
-lnav_log_level_t lnav_log_level;
+lnav_log_level_t lnav_log_level = LOG_LEVEL_DEBUG;
 const char *lnav_log_crash_dir;
 const struct termios *lnav_log_orig_termios;
+static pthread_mutex_t lnav_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+log_state_dumper::log_state_list log_state_dumper::DUMPER_LIST;
 
 static struct {
     size_t lr_length;
@@ -101,6 +104,7 @@ static struct {
 };
 
 static const char *LEVEL_NAMES[] = {
+    "T",
     "D",
     "I",
     "W",
@@ -111,7 +115,7 @@ static char *log_alloc(void)
 {
     off_t data_end = log_ring.lr_length + MAX_LOG_LINE_SIZE;
 
-    if (data_end >= BUFFER_SIZE) {
+    if (data_end >= (off_t)BUFFER_SIZE) {
         const char *new_start = &log_ring.lr_data[MAX_LOG_LINE_SIZE];
 
         new_start = (const char *)memchr(
@@ -121,7 +125,7 @@ static char *log_alloc(void)
         log_ring.lr_length = 0;
 
         assert(log_ring.lr_frag_start >= 0);
-        assert(log_ring.lr_frag_start <= BUFFER_SIZE);
+        assert(log_ring.lr_frag_start <= (off_t)BUFFER_SIZE);
     } else if (data_end >= log_ring.lr_frag_start) {
         const char *new_start = &log_ring.lr_data[log_ring.lr_frag_start];
 
@@ -130,7 +134,7 @@ static char *log_alloc(void)
         assert(new_start != NULL);
         log_ring.lr_frag_start = new_start - log_ring.lr_data;
         assert(log_ring.lr_frag_start >= 0);
-        assert(log_ring.lr_frag_start <= BUFFER_SIZE);
+        assert(log_ring.lr_frag_start <= (off_t)BUFFER_SIZE);
     }
 
     return &log_ring.lr_data[log_ring.lr_length];
@@ -156,7 +160,7 @@ void log_host_info(void)
     struct utsname un;
 
     uname(&un);
-    log_info("uname:")
+    log_info("uname:");
     log_info("  sysname=%s", un.sysname);
     log_info("  nodename=%s", un.nodename);
     log_info("  machine=%s", un.machine);
@@ -168,7 +172,7 @@ void log_host_info(void)
     log_info("  PATH=%s", getenv("PATH"));
     log_info("  TERM=%s", getenv("TERM"));
     log_info("  TZ=%s", getenv("TZ"));
-    log_info("Process:")
+    log_info("Process:");
     log_info("  pid=%d", getpid());
     log_info("  ppid=%d", getppid());
     log_info("  pgrp=%d", getpgrp());
@@ -178,6 +182,8 @@ void log_host_info(void)
     log_info("  egid=%d", getegid());
     getcwd(cwd, sizeof(cwd));
     log_info("  cwd=%s", cwd);
+    log_info("Executable:");
+    log_info("  version=%s", VCS_PACKAGE_STRING);
 }
 
 void log_msg(lnav_log_level_t level, const char *src_file, int line_number,
@@ -193,6 +199,8 @@ void log_msg(lnav_log_level_t level, const char *src_file, int line_number,
     if (level < lnav_log_level) {
         return;
     }
+
+    mutex_guard mg(lnav_log_mutex);
 
     va_start(args, fmt);
     gettimeofday(&curr_time, NULL);
@@ -213,7 +221,7 @@ void log_msg(lnav_log_level_t level, const char *src_file, int line_number,
         line_number);
     rc = vsnprintf(&line[prefix_size], MAX_LOG_LINE_SIZE - prefix_size,
         fmt, args);
-    if (rc >= (MAX_LOG_LINE_SIZE - prefix_size)) {
+    if (rc >= (ssize_t)(MAX_LOG_LINE_SIZE - prefix_size)) {
         rc = MAX_LOG_LINE_SIZE - prefix_size - 1;
     }
     line[prefix_size + rc] = '\n';
@@ -223,6 +231,40 @@ void log_msg(lnav_log_level_t level, const char *src_file, int line_number,
         fflush(lnav_log_file);
     }
     va_end(args);
+}
+
+void log_msg_extra(const char *fmt, ...)
+{
+    va_list args;
+    ssize_t rc;
+    char *line;
+
+    mutex_guard mg(lnav_log_mutex);
+
+    va_start(args, fmt);
+    line = log_alloc();
+    rc = vsnprintf(line, MAX_LOG_LINE_SIZE - 1, fmt, args);
+    log_ring.lr_length += rc;
+    if (lnav_log_file != NULL) {
+        fwrite(line, 1, rc, lnav_log_file);
+        fflush(lnav_log_file);
+    }
+    va_end(args);
+}
+
+void log_msg_extra_complete()
+{
+    char *line;
+
+    mutex_guard mg(lnav_log_mutex);
+
+    line = log_alloc();
+    line[0] = '\n';
+    log_ring.lr_length += 1;
+    if (lnav_log_file != NULL) {
+        fwrite(line, 1, 1, lnav_log_file);
+        fflush(lnav_log_file);
+    }
 }
 
 static void sigabrt(int sig)
@@ -257,7 +299,7 @@ static void sigabrt(int sig)
     snprintf(latest_crash_path, sizeof(latest_crash_path),
         "%s/latest-crash.log", lnav_log_crash_dir);
     if ((fd = open(crash_path, O_CREAT|O_TRUNC|O_WRONLY, 0600)) != -1) {
-        if (log_ring.lr_frag_start < BUFFER_SIZE) {
+        if (log_ring.lr_frag_start < (off_t)BUFFER_SIZE) {
             write(fd, &log_ring.lr_data[log_ring.lr_frag_start],
                 log_ring.lr_frag_end - log_ring.lr_frag_start);
         }
@@ -265,6 +307,27 @@ static void sigabrt(int sig)
 #ifdef HAVE_EXECINFO_H
         backtrace_symbols_fd(frames, frame_count, fd);
 #endif
+        log_ring.lr_length = 0;
+        log_ring.lr_frag_start = BUFFER_SIZE;
+        log_ring.lr_frag_end = 0;
+
+        log_host_info();
+
+        {
+            log_state_dumper *lsd;
+
+            for (lsd = LIST_FIRST(&log_state_dumper::DUMPER_LIST.lsl_list);
+                    lsd != NULL;
+                    lsd = LIST_NEXT(lsd, lsd_link)) {
+                lsd->log_state();
+            }
+        }
+
+        if (log_ring.lr_frag_start < (off_t)BUFFER_SIZE) {
+            write(fd, &log_ring.lr_data[log_ring.lr_frag_start],
+                    log_ring.lr_frag_end - log_ring.lr_frag_start);
+        }
+        write(fd, log_ring.lr_data, log_ring.lr_length);
         close(fd);
 
         remove(latest_crash_path);

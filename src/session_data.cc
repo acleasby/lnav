@@ -48,6 +48,7 @@
 #include "lnav_util.hh"
 #include "lnav_config.hh"
 #include "session_data.hh"
+#include "command_executor.hh"
 
 using namespace std;
 
@@ -118,17 +119,21 @@ static bool bind_line(sqlite3 *db,
         return false;
     }
 
-    const std::string &format_name = lf->get_format()->get_name();
+    intern_string_t format_name = lf->get_format()->get_name();
 
     if (sqlite3_bind_text(stmt, 2,
-                          format_name.c_str(), format_name.length(),
+                          format_name.get(), format_name.size(),
                           SQLITE_TRANSIENT) != SQLITE_OK) {
         log_error("could not bind log format -- %s\n",
                     sqlite3_errmsg(db));
         return false;
     }
 
-    std::string line_hash = hash_string(lf->read_line(line_iter));
+    shared_buffer_ref sbr;
+    lf->read_line(line_iter, sbr);
+    std::string line_hash = hash_bytes(sbr.get_data(), sbr.length(),
+                                       &cl, sizeof(cl),
+                                       NULL);
 
     if (sqlite3_bind_text(stmt, 3,
                           line_hash.c_str(), line_hash.length(),
@@ -415,10 +420,10 @@ static void load_time_bookmarks(void)
             return;
         }
 
-        const std::string &format_name = lf->get_format()->get_name();
+        intern_string_t format_name = lf->get_format()->get_name();
 
         if (sqlite3_bind_text(stmt.in(), 4,
-                              format_name.c_str(), format_name.length(),
+                              format_name.get(), format_name.size(),
                               SQLITE_TRANSIENT) != SQLITE_OK) {
             log_error("could not bind log format -- %s\n",
                     sqlite3_errmsg(db.in()));
@@ -474,9 +479,14 @@ static void load_time_bookmarks(void)
                         break;
                     }
 
-                    lf->read_line(line_iter, line);
+                    shared_buffer_ref sbr;
+                    content_line_t cl = content_line_t(std::distance(lf->begin(), line_iter));
+                    lf->read_line(line_iter, sbr);
 
-                    string line_hash = hash_string(line);
+                    string line_hash = hash_bytes(sbr.get_data(), sbr.length(),
+                                                  &cl, sizeof(cl),
+                                                  NULL);
+
                     if (line_hash == log_hash) {
                         content_line_t line_cl = content_line_t(
                             base_content_line + std::distance(lf->begin(), line_iter));
@@ -574,10 +584,10 @@ static void load_time_bookmarks(void)
             return;
         }
 
-        const std::string &format_name = lf->get_format()->get_name();
+        intern_string_t format_name = lf->get_format()->get_name();
 
         if (sqlite3_bind_text(stmt.in(), 4,
-                              format_name.c_str(), format_name.length(),
+                              format_name.get(), format_name.size(),
                               SQLITE_TRANSIENT) != SQLITE_OK) {
             log_error("could not bind log format -- %s\n",
                     sqlite3_errmsg(db.in()));
@@ -680,8 +690,6 @@ static int read_save_time(yajlpp_parse_context *ypc, long long value)
 
 static int read_time_offset(yajlpp_parse_context *ypc, int value)
 {
-    lnav_data.ld_log_source.set_time_offset(value);
-
     return 1;
 }
 
@@ -1104,10 +1112,10 @@ static void save_time_bookmarks(void)
             return;
         }
 
-        const std::string &format_name = lf->get_format()->get_name();
+        intern_string_t format_name = lf->get_format()->get_name();
 
         if (sqlite3_bind_text(stmt.in(), 2,
-                              format_name.c_str(), format_name.length(),
+                              format_name.get(), format_name.size(),
                               SQLITE_TRANSIENT) != SQLITE_OK) {
             log_error("could not bind log format -- %s\n",
                     sqlite3_errmsg(db.in()));
@@ -1290,7 +1298,7 @@ void save_session(void)
 
         fclose(file.release());
 
-        rename(view_file_tmp_name.c_str(), view_file_name.c_str());
+        log_perror(rename(view_file_tmp_name.c_str(), view_file_name.c_str()));
 
         log_debug("Saved session: %s", view_file_name.c_str());
     }
@@ -1301,7 +1309,6 @@ void reset_session(void)
     textview_curses::highlight_map_t &hmap =
         lnav_data.ld_views[LNV_LOG].get_highlights();
     textview_curses::highlight_map_t::iterator hl_iter = hmap.begin();
-    logfile_sub_source &lss = lnav_data.ld_log_source;
 
     log_info("reset session: time=%d", lnav_data.ld_session_time);
 
@@ -1329,8 +1336,23 @@ void reset_session(void)
         lf->clear_time_offset();
     }
 
-    lnav_data.ld_log_source.get_filters().clear_filters();
+    lnav_data.ld_log_source.clear_min_max_log_times();
 
-    lss.get_user_bookmarks()[&textview_curses::BM_USER].clear();
-    lss.get_user_bookmarks()[&textview_curses::BM_PARTITION].clear();
+    lnav_data.ld_log_source.get_user_bookmark_metadata().clear();
+
+    for (int lpc = 0; lpc < LNV__MAX; lpc++) {
+        textview_curses &tc = lnav_data.ld_views[lpc];
+        text_sub_source *tss = tc.get_sub_source();
+
+        if (tss == NULL) {
+            continue;
+        }
+        tss->get_filters().clear_filters();
+        tss->text_filters_changed();
+        tss->text_clear_marks(&textview_curses::BM_USER);
+        tc.get_bookmarks()[&textview_curses::BM_USER].clear();
+        tss->text_clear_marks(&textview_curses::BM_PARTITION);
+        tc.get_bookmarks()[&textview_curses::BM_PARTITION].clear();
+        tc.reload_data();
+    }
 }

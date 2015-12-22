@@ -51,6 +51,25 @@
 
 STRONG_INT_TYPE(uint64_t, content_line);
 
+class logfile_sub_source;
+
+class index_delegate {
+public:
+    virtual ~index_delegate() { };
+
+    virtual void index_start(logfile_sub_source &lss) {
+
+    };
+
+    virtual void index_line(logfile_sub_source &lss, logfile *lf, logfile::iterator ll) {
+
+    };
+
+    virtual void index_complete(logfile_sub_source &lss) {
+
+    };
+};
+
 /**
  * Delegate class that merges the contents of multiple log files into a single
  * source of data for a text view.
@@ -100,9 +119,39 @@ public:
         }
     };
 
+    bool get_min_log_time(struct timeval &tv_out) const {
+        tv_out = this->lss_min_log_time;
+        return (this->lss_min_log_time.tv_sec != 0 ||
+                this->lss_min_log_time.tv_usec != 0);
+    };
+
+    void set_min_log_time(struct timeval &tv) {
+        this->lss_min_log_time = tv;
+    };
+
+    bool get_max_log_time(struct timeval &tv_out) const {
+        tv_out = this->lss_max_log_time;
+        return (this->lss_max_log_time.tv_sec != INT_MAX ||
+                this->lss_max_log_time.tv_usec != 0);
+    };
+
+    void set_max_log_time(struct timeval &tv) {
+        this->lss_max_log_time = tv;
+    };
+
+    void clear_min_max_log_times() {
+        memset(&this->lss_min_log_time, 0, sizeof(this->lss_min_log_time));
+        this->lss_max_log_time.tv_sec = INT_MAX;
+        this->lss_max_log_time.tv_usec = 0;
+    };
+
     size_t text_line_count()
     {
         return this->lss_filtered_index.size();
+    };
+
+    size_t text_line_width() {
+        return this->lss_longest_line;
     };
 
     bool empty() const { return this->lss_filtered_index.empty(); };
@@ -363,6 +412,14 @@ public:
         return content_line_t(index * MAX_LINES_PER_FILE);
     };
 
+    void set_index_delegate(index_delegate *id) {
+        this->lss_index_delegate = id;
+    };
+
+    index_delegate *get_index_delegate() const {
+        return this->lss_index_delegate;
+    };
+
     static const uint64_t MAX_CONTENT_LINES = (1ULL << 40) - 1;
     static const uint64_t MAX_LINES_PER_FILE = 256 * 1024 * 1024;
     static const uint64_t MAX_FILES          = (
@@ -502,11 +559,14 @@ private:
     logfile *         lss_token_file;
     std::string       lss_token_value;
     shared_buffer     lss_share_manager;
-    int               lss_scrub_len;
-    int               lss_token_offset;
     int               lss_token_date_end;
     logfile::iterator lss_token_line;
     std::pair<int, size_t> lss_line_size_cache[LINE_SIZE_CACHE_SIZE];
     logline::level_t  lss_min_log_level;
+    struct timeval    lss_min_log_time;
+    struct timeval    lss_max_log_time;
+    index_delegate    *lss_index_delegate;
+    size_t            lss_longest_line;
 };
+
 #endif

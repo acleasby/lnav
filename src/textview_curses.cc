@@ -57,6 +57,7 @@ bookmark_type_t textview_curses::BM_USER("user");
 bookmark_type_t textview_curses::BM_PARTITION("partition");
 bookmark_type_t textview_curses::BM_SEARCH("search");
 
+string_attr_type textview_curses::SA_ORIGINAL_LINE;
 string_attr_type textview_curses::SA_BODY;
 
 textview_curses::textview_curses()
@@ -65,7 +66,8 @@ textview_curses::textview_curses()
       tc_searching(false),
       tc_follow_search(false),
       tc_selection_start(-1),
-      tc_selection_last(-1)
+      tc_selection_last(-1),
+      tc_selection_cleared(false)
 {
     this->set_data_source(this);
 }

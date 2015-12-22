@@ -51,6 +51,7 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 #include <exception>
 
 #include "lnav_log.hh"
@@ -79,6 +80,12 @@ public:
 
         int c_begin;
         int c_end;
+
+        void ltrim(const char *str) {
+            while (this->c_begin < this->c_end && isspace(str[this->c_begin])) {
+                this->c_begin += 1;
+            }
+        };
 
         bool is_valid() const { return this->c_begin != -1; };
 
@@ -337,6 +344,7 @@ public:
 
         pcre_refcount(this->p_code, 1);
         this->study();
+        this->find_captures(pattern);
     };
 
     pcrepp(const pcrepp &other)
@@ -367,6 +375,18 @@ public:
                                             this->p_name_len);
     };
 
+    const std::vector<pcre_context::capture> captures() const {
+        return this->p_captures;
+    };
+
+    std::vector<pcre_context::capture>::const_iterator cap_begin() const {
+        return this->p_captures.begin();
+    };
+
+    std::vector<pcre_context::capture>::const_iterator cap_end() const {
+        return this->p_captures.end();
+    };
+
     int name_index(const std::string &name) const {
         return this->name_index(name.c_str());
     };
@@ -374,10 +394,26 @@ public:
     int name_index(const char *name) const {
         int retval = pcre_get_stringnumber(this->p_code, name);
 
-        if (retval == PCRE_ERROR_NOSUBSTRING)
+        if (retval == PCRE_ERROR_NOSUBSTRING) {
             return retval;
+        }
 
         return retval - 1;
+    };
+
+    const char *name_for_capture(int index) {
+        for (pcre_named_capture::iterator iter = this->named_begin();
+             iter != this->named_end();
+             ++iter) {
+            if (iter->index() == index) {
+                return iter->pnc_name;
+            }
+        }
+        return "";
+    };
+
+    int get_capture_count() const {
+        return this->p_capture_count;
     };
 
     bool match(pcre_context &pc, pcre_input &pi, int options = 0) const
@@ -447,6 +483,30 @@ public:
         return rc > 0;
     };
 
+    size_t match_partial(pcre_input &pi) const {
+        size_t length = pi.pi_length;
+        int rc;
+
+        do {
+            rc = pcre_exec(this->p_code,
+                           this->p_code_extra.in(),
+                           pi.get_string(),
+                           length,
+                           pi.pi_offset,
+                           PCRE_PARTIAL,
+                           NULL,
+                           0);
+            switch (rc) {
+                case 0:
+                case PCRE_ERROR_PARTIAL:
+                    return length;
+            }
+            length -= 1;
+        } while (length > 0);
+
+        return length;
+    }
+
 #ifdef PCRE_STUDY_JIT_COMPILE
     static pcre_jit_stack *jit_stack(void);
 
@@ -483,6 +543,10 @@ private:
         }
         pcre_fullinfo(this->p_code,
                       this->p_code_extra,
+                      PCRE_INFO_CAPTURECOUNT,
+                      &this->p_capture_count);
+        pcre_fullinfo(this->p_code,
+                      this->p_code_extra,
                       PCRE_INFO_NAMECOUNT,
                       &this->p_named_count);
         pcre_fullinfo(this->p_code,
@@ -495,11 +559,15 @@ private:
                       &this->p_named_entries);
     };
 
+    void find_captures(const char *pattern);
+
     pcre *p_code;
     auto_mem<pcre_extra> p_code_extra;
+    int p_capture_count;
     int p_named_count;
     int p_name_len;
     pcre_named_capture *p_named_entries;
+    std::vector<pcre_context::capture> p_captures;
 };
 
 #endif

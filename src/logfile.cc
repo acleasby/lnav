@@ -59,7 +59,8 @@ throw (error)
       lf_index_size(0),
       lf_is_closed(false),
       lf_logline_observer(NULL),
-      lf_logfile_observer(NULL)
+      lf_logfile_observer(NULL),
+      lf_longest_line(0)
 {
     require(filename.size() > 0);
 
@@ -93,7 +94,7 @@ throw (error)
         this->lf_valid_filename = true;
     }
     else {
-        fstat(fd, &this->lf_stat);
+        log_perror(fstat(fd, &this->lf_stat));
         this->lf_valid_filename = false;
     }
 
@@ -136,7 +137,7 @@ void logfile::set_format_base_time(log_format *lf)
 
 void logfile::process_prefix(off_t offset, shared_buffer_ref &sbr)
 {
-    bool found = false;
+    log_format::scan_result_t found = log_format::SCAN_NO_MATCH;
 
     if (this->lf_format.get() != NULL) {
         /* We've locked onto a format, just use that scanner. */
@@ -152,7 +153,7 @@ void logfile::process_prefix(off_t offset, shared_buffer_ref &sbr)
          * are sufficiently different that there are no ambiguities...
          */
         for (iter = root_formats.begin();
-             iter != root_formats.end() && !found;
+             iter != root_formats.end() && (found != log_format::SCAN_MATCH);
              ++iter) {
             if (!(*iter)->match_name(this->lf_filename)) {
                 continue;
@@ -160,28 +161,22 @@ void logfile::process_prefix(off_t offset, shared_buffer_ref &sbr)
 
             (*iter)->clear();
             this->set_format_base_time(*iter);
-            if (!(*iter)->scan(this->lf_index, offset, sbr)) {
-                log_debug("%s:%d:log format does not match -- %s",
-                    this->lf_filename.c_str(),
-                    this->lf_index.size(),
-                    (*iter)->get_name().c_str());
-            }
-            else {
+            found = (*iter)->scan(this->lf_index, offset, sbr);
+            if (found == log_format::SCAN_MATCH) {
 #if 0
                 require(this->lf_index.size() == 1 ||
                        (this->lf_index[this->lf_index.size() - 2] <
                         this->lf_index[this->lf_index.size() - 1]));
 #endif
-                log_debug("%s:%d:log format found -- %s",
+                log_info("%s:%d:log format found -- %s",
                     this->lf_filename.c_str(),
                     this->lf_index.size(),
-                    (*iter)->get_name().c_str());
+                    (*iter)->get_name().get());
 
                 this->lf_format =
                     auto_ptr<log_format>((*iter)->specialized());
                 this->set_format_base_time(this->lf_format.get());
                 this->lf_content_id = hash_string(string(sbr.get_data(), sbr.length()));
-                found = true;
 
                 /*
                  * We'll go ahead and assume that any previous lines were
@@ -198,42 +193,50 @@ void logfile::process_prefix(off_t offset, shared_buffer_ref &sbr)
         }
     }
 
-    if (found) {
-        if (this->lf_index.size() >= 2) {
-            logline &second_to_last = this->lf_index[this->lf_index.size() - 2];
-            logline &latest = this->lf_index.back();
+    switch (found) {
+        case log_format::SCAN_MATCH:
+            if (this->lf_index.size() >= 2) {
+                logline &second_to_last = this->lf_index[this->lf_index.size() - 2];
+                logline &latest = this->lf_index.back();
 
-            if (latest < second_to_last) {
-                latest.set_time(second_to_last.get_time());
-                latest.set_millis(second_to_last.get_millis());
+                if (latest < second_to_last) {
+                    latest.set_time(second_to_last.get_time());
+                    latest.set_millis(second_to_last.get_millis());
+                }
             }
-        }
-    }
+            break;
+        case log_format::SCAN_NO_MATCH: {
+            logline::level_t last_level = logline::LEVEL_UNKNOWN;
+            time_t last_time = this->lf_index_time;
+            short last_millis = 0;
+            uint8_t last_mod = 0, last_opid = 0;
 
-    /* If the scanner didn't match, than we need to add it. */
-    if (!found) {
-        logline::level_t last_level  = logline::LEVEL_UNKNOWN;
-        time_t           last_time   = this->lf_index_time;
-        short            last_millis = 0;
+            if (!this->lf_index.empty()) {
+                logline &ll = this->lf_index.back();
 
-        if (!this->lf_index.empty()) {
-            logline &ll = this->lf_index.back();
-
-            /*
-             * Assume this line is part of the previous one(s) and copy the
-             * metadata over.
-             */
-            last_time   = ll.get_time();
-            last_millis = ll.get_millis();
-            if (this->lf_format.get() != NULL) {
-                last_level = (logline::level_t)
-                             (ll.get_level() | logline::LEVEL_CONTINUED);
+                /*
+                 * Assume this line is part of the previous one(s) and copy the
+                 * metadata over.
+                 */
+                last_time = ll.get_time();
+                last_millis = ll.get_millis();
+                if (this->lf_format.get() != NULL) {
+                    last_level = (logline::level_t)
+                            (ll.get_level() | logline::LEVEL_CONTINUED);
+                }
+                last_mod = ll.get_module_id();
+                last_opid = ll.get_opid();
             }
+            this->lf_index.push_back(logline(offset,
+                                             last_time,
+                                             last_millis,
+                                             last_level,
+                                             last_mod,
+                                             last_opid));
+            break;
         }
-        this->lf_index.push_back(logline(offset,
-                                         last_time,
-                                         last_millis,
-                                         last_level));
+        case log_format::SCAN_INCOMPLETE:
+            break;
     }
 }
 
@@ -276,6 +279,7 @@ throw (line_buffer::error, logfile::error)
         while (this->lf_line_buffer.read_line(off, sbr, &lv)) {
             size_t old_size = this->lf_index.size();
 
+            this->lf_longest_line = std::max(this->lf_longest_line, sbr.length());
             this->lf_partial_line = lv.lv_partial;
             this->process_prefix(last_off, sbr);
             last_off = off;
@@ -330,7 +334,6 @@ void logfile::read_line(logfile::iterator ll, string &line_out)
         if (this->lf_line_buffer.read_line(off, sbr)) {
             if (this->lf_format.get() != NULL) {
                 this->lf_format->get_subline(*ll, sbr);
-
             }
             line_out.append(sbr.get_data(), sbr.length());
         }

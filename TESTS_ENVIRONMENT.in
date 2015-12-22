@@ -33,8 +33,17 @@ test_num=0
 lnav_test="${top_builddir}/src/lnav-test"
 export lnav_test
 
+lnav="${top_builddir}/src/lnav"
+export lnav
+
 LNAV_LOG_PATH="${top_builddir}/test/test.log"
 export LNAV_LOG_PATH
+
+SFTP_TEST_URL="@SFTP_TEST_URL@"
+export SFTP_TEST_URL
+
+HAVE_SQLITE3_VALUE_SUBTYPE="@HAVE_SQLITE3_VALUE_SUBTYPE@"
+export HAVE_SQLITE3_VALUE_SUBTYPE
 
 ## BEGIN Functions
 
@@ -72,7 +81,7 @@ run_test() {
 #     EOF
 #
 check_output() {
-    diff -u ${test_file_base}_${test_num}.tmp - > ${test_file_base}_${test_num}.diff
+    diff -w -u - ${test_file_base}_${test_num}.tmp > ${test_file_base}_${test_num}.diff
     if test $? -ne 0; then
         echo $LAST_TEST
         echo $1
@@ -82,8 +91,12 @@ check_output() {
     test_num=`expr ${test_num} \+ 1`
 }
 
+test_err_filename() {
+    echo ${test_file_base}_${test_num}.err
+}
+
 check_error_output() {
-    diff -u ${test_file_base}_${test_num}.err - \
+    diff -w -u - ${test_file_base}_${test_num}.err \
         > ${test_file_base}_${test_num}.err.diff
     if test $? -ne 0; then
         echo $LAST_TEST

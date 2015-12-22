@@ -87,25 +87,31 @@ class generic_log_format : public log_format {
 
     static pcre_format *get_pcre_log_formats() {
         static pcre_format log_fmt[] = {
-            { "", pcrepp("^(?<timestamp>[\\dTZ: ,\\.-]+)([^:]+)") },
-            { "", pcrepp("^(?<timestamp>[\\w:+/\\.-]+) \\[\\w (.*)") },
-            { "", pcrepp("^(?<timestamp>[\\w:,/\\.-]+) (.*)") },
-            { "", pcrepp("^(?<timestamp>[\\w: \\.,/-]+)\\[[^\\]]+\\](.*)") },
-            { "", pcrepp("^(?<timestamp>[\\w: \\.,/-]+) (.*)") },
+            pcre_format("^(?<timestamp>[\\dTZ: +/\\-,\\.-]+)([^:]+)"),
+            pcre_format("^(?<timestamp>[\\w:+/\\.-]+) \\[\\w (.*)"),
+            pcre_format("^(?<timestamp>[\\w:,/\\.-]+) (.*)"),
+            pcre_format("^(?<timestamp>[\\w: \\.,/-]+)\\[[^\\]]+\\](.*)"),
+            pcre_format("^(?<timestamp>[\\w: \\.,/-]+) (.*)"),
 
-            { "", pcrepp("^\\[(?<timestamp>[\\d: \\.-]+) \\w+ (.*)") },
-            { "", pcrepp("^\\[(?<timestamp>[\\w: +/-]+)\\] (.*)") },
-            { "", pcrepp("^\\[(?<timestamp>[\\w: +/-]+)\\] \\[(\\w+)\\]") },
-            { "", pcrepp("^\\[(?<timestamp>[\\w: \\.+/-]+)\\] \\w+ (.*)") },
-            { "", pcrepp("^\\[(?<timestamp>[\\w: +/-]+)\\] \\(\\d+\\) (.*)") },
+            pcre_format("^\\[(?<timestamp>[\\w: \\.,+/-]+)\\]\\s*(\\w+):?"),
+            pcre_format("^\\[(?<timestamp>[\\w: \\.,+/-]+)\\] (.*)"),
+            pcre_format("^\\[(?<timestamp>[\\w: \\.,+/-]+)\\] \\[(\\w+)\\]"),
+            pcre_format("^\\[(?<timestamp>[\\w: \\.,+/-]+)\\] \\w+ (.*)"),
+            pcre_format("^\\[(?<timestamp>[\\w: ,+/-]+)\\] \\(\\d+\\) (.*)"),
 
-            { NULL, pcrepp("") }
+            pcre_format()
         };
 
         return log_fmt;
     };
 
-    string get_name() const { return "generic_log"; };
+    std::string get_pattern_regex() const {
+        return get_pcre_log_formats()[this->lf_fmt_lock].name;
+    }
+
+    intern_string_t get_name() const {
+        return intern_string::lookup("generic_log");
+    };
 
     void scrub(string &line)
     {
@@ -124,11 +130,10 @@ class generic_log_format : public log_format {
         }
     };
 
-    bool scan(vector<logline> &dst,
-              off_t offset,
-              shared_buffer_ref &sbr)
+    scan_result_t scan(vector<logline> &dst,
+                       off_t offset,
+                       shared_buffer_ref &sbr)
     {
-        bool      retval = false;
         struct exttm log_time;
         struct timeval log_tv;
         pcre_context::capture_t ts, level;
@@ -148,18 +153,19 @@ class generic_log_format : public log_format {
             logline::level_t level_val = logline::string2level(
                     level_str, level.length());
 
-            this->check_for_new_year(dst, log_tv);
+            this->check_for_new_year(dst, log_time, log_tv);
 
             dst.push_back(logline(offset, log_tv, level_val));
-            retval = true;
+            return SCAN_MATCH;
         }
 
-        return retval;
+        return SCAN_NO_MATCH;
     };
 
     void annotate(shared_buffer_ref &line,
                   string_attrs_t &sa,
-                  std::vector<logline_value> &values) const
+                  std::vector<logline_value> &values,
+                  bool annotate_module) const
     {
         pcre_format &fmt = get_pcre_log_formats()[this->lf_fmt_lock];
         struct line_range lr;
@@ -193,7 +199,7 @@ class generic_log_format : public log_format {
         sa.push_back(string_attr(lr, &textview_curses::SA_BODY));
     };
 
-    auto_ptr<log_format> specialized()
+    auto_ptr<log_format> specialized(int fmt_lock)
     {
         auto_ptr<log_format> retval((log_format *)
                                     new generic_log_format(*this));
